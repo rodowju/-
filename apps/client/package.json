@@ -1,0 +1,20 @@
+{
+  "name": "@freeze/client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"(client: no unit tests yet)\""
+  },
+  "dependencies": {
+    "@freeze/sim": "workspace:*",
+    "phaser": "^3.88.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
