@@ -182,3 +182,59 @@ describe('i18n', () => {
     expect(detectLang(undefined)).toBe('en');
   });
 });
+
+import { EventQueue, MAX_STRING, SCHEMA, buildPayload, sanitize, summarizeFrames, type EventName } from '../src/logic/analytics';
+
+describe('analytics 로직', () => {
+  it('허용되지 않은 키는 버린다 (민감 정보 혼입 방지)', () => {
+    const p = sanitize('stage_clear', { stage: 3, stars: 2, email: 'a@b.c', name: 'x', deaths: 1 });
+    expect(Object.keys(p).sort()).toEqual(['deaths', 'stage', 'stars']);
+  });
+  it('원시 타입만 허용: 객체/배열/함수/NaN/Infinity 제거', () => {
+    const p = sanitize('perf', { stage: 1, frames: NaN, p50: Infinity, p95: { a: 1 }, max: [1] });
+    expect(p).toEqual({ stage: 1 });
+  });
+  it('문자열 길이 제한', () => {
+    const p = sanitize('error', { msg: 'x'.repeat(500), src: 'y' });
+    expect((p.msg as string).length).toBe(MAX_STRING);
+  });
+  it('모든 이벤트 스키마 키는 중복 없이 정의되어 있다', () => {
+    for (const [name, keys] of Object.entries(SCHEMA)) {
+      expect(new Set(keys).size, name).toBe(keys.length);
+    }
+    // 개인정보로 오인될 키가 스키마에 없다
+    const banned = ['email', 'name', 'phone', 'address', 'userId', 'ip'];
+    for (const keys of Object.values(SCHEMA)) for (const b of banned) expect(keys).not.toContain(b);
+  });
+  it('큐: 용량 초과 시 오래된 것부터 버리고, ack 로 확정 제거', () => {
+    const q = new EventQueue(3);
+    for (let i = 0; i < 5; i++) q.push({ name: 'equip' as EventName, ts: i, props: { skin: String(i) } });
+    expect(q.size).toBe(3);
+    expect(q.peek(10).map((e) => e.ts)).toEqual([2, 3, 4]);
+    q.ack(2);
+    expect(q.all().map((e) => e.ts)).toEqual([4]);
+  });
+  it('페이로드 구성', () => {
+    const pl = buildPayload('i', 's', 'freeze', [{ name: 'equip', ts: 1, props: {} }]);
+    expect(pl).toMatchObject({ v: 1, install: 'i', session: 's', app: 'freeze' });
+    expect(pl.events).toHaveLength(1);
+  });
+  it('프레임 요약: 백분위와 최댓값', () => {
+    const d = Array.from({ length: 100 }, (_, i) => 10 + i / 10); // 10.0..19.9
+    const r = summarizeFrames(d);
+    expect(r.frames).toBe(100);
+    expect(r.p50).toBeCloseTo(15, 0);
+    expect(r.p95).toBeGreaterThan(r.p50);
+    expect(r.max).toBeCloseTo(19.9, 1);
+    expect(summarizeFrames([])).toEqual({ frames: 0, p50: 0, p95: 0, max: 0 });
+  });
+});
+
+describe('설정 필드 마이그레이션', () => {
+  it('muted/analytics 는 불리언일 때만 유지', () => {
+    expect(migrate({ muted: true, analytics: false })).toMatchObject({ muted: true, analytics: false });
+    const p = migrate({ muted: 'yes', analytics: 1 });
+    expect(p.muted).toBeUndefined();
+    expect(p.analytics).toBeUndefined();
+  });
+});

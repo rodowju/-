@@ -20,6 +20,10 @@ export interface Progress {
   /** 클리어한 최고 스테이지 */
   readonly highestStage: number;
   readonly freeSkinGranted: boolean;
+  /** 효과음 끔 */
+  readonly muted?: boolean;
+  /** 익명 사용 통계 전송 허용 (미설정이면 기본 허용 — 지역별 동의 정책은 출시 전 검토 필요) */
+  readonly analytics?: boolean;
 }
 
 export function defaultProgress(): Progress {
@@ -76,6 +80,8 @@ export function migrate(raw: unknown): Progress {
     lastInterstitialAt: num(raw.lastInterstitialAt, 0),
     highestStage: Math.max(Math.floor(num(raw.highestStage, 0)), stageKeys.length ? Math.max(...stageKeys) : 0),
     freeSkinGranted: raw.freeSkinGranted === true,
+    ...(typeof raw.muted === 'boolean' ? { muted: raw.muted } : {}),
+    ...(typeof raw.analytics === 'boolean' ? { analytics: raw.analytics } : {}),
   };
 }
 

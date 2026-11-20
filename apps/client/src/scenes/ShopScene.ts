@@ -5,6 +5,8 @@ import { t, type MsgKey } from '../logic/i18n';
 import { getLang, getProgress, saveProgress, setLang } from '../services/storage';
 import { COLORS, GAME_H, GAME_W } from '../layout';
 import { drawGuardianDeco, drawRunner, drawTrail } from '../render/skinDraw';
+import { sfx } from '../audio/sfx';
+import { isAnalyticsEnabled, setAnalyticsEnabled, track } from '../services/analytics';
 
 interface ShopData {
   /** 상점을 나갈 때 시작할 플레이 씬 데이터 */
@@ -28,6 +30,7 @@ export class ShopScene extends Phaser.Scene {
   init(data: ShopData): void {
     this.back = data.back;
     this.tab = 'character';
+    track('shop_open', { from: data.back ? 'result' : 'direct' });
   }
 
   create(): void {
@@ -57,10 +60,22 @@ export class ShopScene extends Phaser.Scene {
 
     add(this.add.text(16, 16, t(lang, 'shop.title'), { ...mono, fontSize: '24px', color: COLORS.text, fontStyle: 'bold' }));
     add(this.add.text(GAME_W - 16, 20, `● ${p.coins}`, { ...mono, fontSize: '20px', color: '#f6e05e' }).setOrigin(1, 0));
-    this.button(add, GAME_W - 64, 58, 44, 26, t(lang, 'lang.toggle'), () => {
+    // 설정 토글 (오른쪽에서 왼쪽으로): 언어 / 소리 / 통계
+    const muted = p.muted === true;
+    const statsOn = isAnalyticsEnabled();
+    this.button(add, GAME_W - 38, 62, 44, 26, t(lang, 'lang.toggle'), () => {
       setLang(lang === 'ko' ? 'en' : 'ko');
       this.rebuild();
     });
+    this.button(add, GAME_W - 38 - 22 - 6 - 40, 62, 80, 26, t(lang, muted ? 'settings.sound.off' : 'settings.sound.on'), () => {
+      saveProgress({ ...getProgress(), muted: !muted });
+      sfx.setMuted(!muted);
+      this.rebuild();
+    }, muted ? 0x4a2b2b : 0x2d3640);
+    this.button(add, GAME_W - 38 - 22 - 6 - 80 - 6 - 40, 62, 80, 26, t(lang, statsOn ? 'settings.stats.on' : 'settings.stats.off'), () => {
+      setAnalyticsEnabled(!statsOn);
+      this.rebuild();
+    }, statsOn ? 0x2d3640 : 0x4a2b2b);
 
     // 탭
     const tabW = (GAME_W - 24) / CATEGORIES.length;
@@ -137,6 +152,7 @@ export class ShopScene extends Phaser.Scene {
     const p = getProgress();
     if (p.owned.includes(skin.id)) {
       saveProgress(equip(p, skin.id));
+      track('equip', { skin: skin.id });
     } else {
       const r = buy(p, skin.id);
       if (!r.ok) {
@@ -144,6 +160,7 @@ export class ShopScene extends Phaser.Scene {
         return;
       }
       saveProgress(r.next);
+      track('purchase', { skin: skin.id, price: skin.price });
       this.toast(t(lang, 'shop.bought'));
     }
     this.rebuild();

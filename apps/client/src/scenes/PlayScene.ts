@@ -32,6 +32,9 @@ import { t, type MsgKey } from '../logic/i18n';
 import { DEFAULT_EQUIPPED, skinById, type Skin, type SkinCategory } from '../logic/skins';
 import { drawGuardianDeco, drawRunner, drawTrail, spawnStopFx } from '../render/skinDraw';
 import { ads } from '../services/ads';
+import { sfx } from '../audio/sfx';
+import { summarizeFrames } from '../logic/analytics';
+import { track } from '../services/analytics';
 import { getLang, getProgress, saveProgress } from '../services/storage';
 
 const STEP_MS = 1000 / TICK_HZ;
@@ -108,6 +111,8 @@ export class PlayScene extends Phaser.Scene {
   private newBestStars = false;
   private resultStars = 1;
   private btns: Btn[] = [];
+  private frameDeltas: number[] = [];
+  private lastBeatKey = '';
   private skins!: Record<SkinCategory, Skin>;
 
   private gfx!: Phaser.GameObjects.Graphics;
@@ -150,6 +155,10 @@ export class PlayScene extends Phaser.Scene {
     this.world = createWorld(this.spec);
     this.prev = this.world;
     this.initialWorld = this.world;
+    this.frameDeltas = [];
+    this.lastBeatKey = '';
+    sfx.setMuted(getProgress().muted === true);
+    track('stage_start', { stage: this.stage, attempt: this.deaths + 1, lives: this.lives, assist: this.spec.assistGraceTicks, revived: this.revived });
     this.snapBuf = new SnapshotBuffer(14, 30);
     this.snapBuf.push(this.world);
     this.replay = undefined;
@@ -234,6 +243,7 @@ export class PlayScene extends Phaser.Scene {
     // 입력은 캔버스가 아니라 문서 전체에서 받는다: FIT 스케일의 레터박스(상하/좌우 여백)를 눌러도 동작해야 한다.
     const onPointerDown = (e: PointerEvent): void => {
       if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      sfx.unlock();
       if (this.mode !== 'play' && this.mode !== 'replay') {
         const b = this.hitButton(e);
         if (b) {
@@ -297,7 +307,9 @@ export class PlayScene extends Phaser.Scene {
         const p = getProgress();
         const now = Date.now();
         if (shouldShowInterstitial({ sessions: p.sessions, highestStage: p.highestStage, lastInterstitialAt: p.lastInterstitialAt, now })) {
+          track('ad_request', { kind: 'interstitial', placement: 'stage_end' });
           await ads.showInterstitial();
+          track('ad_complete', { kind: 'interstitial', placement: 'stage_end', rewarded: false });
           saveProgress({ ...getProgress(), lastInterstitialAt: Date.now() });
         }
       }
@@ -317,7 +329,9 @@ export class PlayScene extends Phaser.Scene {
   private async watchRevive(): Promise<void> {
     if (this.busy) return;
     this.busy = true;
+    track('ad_request', { kind: 'rewarded', placement: 'revive' });
     const ok = await ads.showRewarded();
+    track('ad_complete', { kind: 'rewarded', placement: 'revive', rewarded: ok });
     this.busy = false;
     if (ok) this.scene.restart({ stage: this.stage, lives: 1, deaths: this.deaths, revived: true });
   }
@@ -325,7 +339,9 @@ export class PlayScene extends Phaser.Scene {
   private async watchDouble(): Promise<void> {
     if (this.busy || this.doubled) return;
     this.busy = true;
+    track('ad_request', { kind: 'rewarded', placement: 'double_coins' });
     const ok = await ads.showRewarded();
+    track('ad_complete', { kind: 'rewarded', placement: 'double_coins', rewarded: ok });
     this.busy = false;
     if (!ok) return;
     saveProgress(addCoins(getProgress(), this.coinsGained));
@@ -383,6 +399,7 @@ export class PlayScene extends Phaser.Scene {
   // ───────────────────────── 루프 ─────────────────────────
   override update(_time: number, delta: number): void {
     if (this.mode === 'play') {
+      if (this.started && this.frameDeltas.length < 1500) this.frameDeltas.push(delta);
       this.acc += Math.min(delta, 100);
       while (this.acc >= STEP_MS && this.mode === 'play') {
         this.prev = this.world;
@@ -394,12 +411,32 @@ export class PlayScene extends Phaser.Scene {
         this.acc -= STEP_MS;
         if (isPlayerDone(this.world)) this.finishRun();
       }
+      this.beatSfx();
       this.render(this.world, this.prev, this.acc / STEP_MS);
     } else if (this.mode === 'replay' && this.replay) {
       this.updateReplay(Math.min(delta, 100));
     } else {
       this.render(this.world, this.prev, 1, this.replay?.releaseTicks);
     }
+  }
+
+  /** 노래(Chant)를 5박으로 나눈 박자음. 박자는 항상 시각 펄스와 함께 제공된다. */
+  private beatSfx(): void {
+    const g = this.world.guardian;
+    if (g.phase !== 'chant') return;
+    const dur = this.chantLen(g.cycleIdx);
+    const beat = Math.floor(((this.world.tick - g.phaseStart) * 5) / dur);
+    const key = `${g.cycleIdx}:${beat}`;
+    if (key !== this.lastBeatKey) {
+      this.lastBeatKey = key;
+      sfx.play('beat');
+    }
+  }
+
+  private flushPerf(): void {
+    if (this.frameDeltas.length < 30) return;
+    track('perf', { stage: this.stage, ...summarizeFrames(this.frameDeltas) });
+    this.frameDeltas = [];
   }
 
   private updateReplay(delta: number): void {
@@ -425,11 +462,17 @@ export class PlayScene extends Phaser.Scene {
   private onEvent(e: SimEvent): void {
     switch (e.type) {
       case 'phase':
-        if (e.phase === 'turn') navigator.vibrate?.(12);
+        if (e.phase === 'turn') {
+          navigator.vibrate?.(12);
+          sfx.play('turn');
+        } else if (e.phase === 'watch') {
+          sfx.play('watch');
+        }
         break;
       case 'closeCall': {
         const color = { perfect: COLORS.perfect, great: COLORS.great, good: COLORS.good }[e.grade];
         this.popup(`${t(this.lang, `grade.${e.grade}` as MsgKey)}  +${e.points}`, color, e.multiplier > 1 ? `×${e.multiplier}` : '');
+        sfx.play(e.grade);
         if (e.grade === 'perfect') spawnStopFx(this, TRACK_CX, PLAYER_Y, this.skins.stopfx);
         break;
       }
@@ -438,9 +481,11 @@ export class PlayScene extends Phaser.Scene {
           this.lastCaughtSpeed = e.speed;
           this.lastCatchTick = e.tick;
           navigator.vibrate?.([40, 30, 80]);
+          sfx.play('caught');
         }
         break;
       case 'finished':
+        if (e.runner === PLAYER_ID) sfx.play('clear');
         break;
     }
   }
@@ -471,6 +516,20 @@ export class PlayScene extends Phaser.Scene {
       // 동적 Assist: 무사고면 줄이고, 고전하면 늘린다 (유저에게는 알리지 않는다)
       saveProgress({ ...res.next, assist: adjustAssist(this.spec.assistGraceTicks, { cleared: true, deaths: this.deaths }) });
       this.coinsGained = res.coins;
+      track('stage_clear', {
+        stage: this.stage,
+        stars,
+        ticks: p.endTick,
+        par: this.spec.parTicks,
+        place: p.place,
+        total: this.world.runners.length,
+        score: this.world.score,
+        maxMult: this.maxMult,
+        deaths: this.deaths,
+        assist: this.spec.assistGraceTicks,
+        coins: res.coins,
+      });
+      this.flushPerf();
       this.newBestStars = res.newBest && prevBest > 0;
       this.unlockedSkinName = res.freeSkin ? t(this.lang, (skinById(res.freeSkin)?.nameKey ?? 'skin.character.ember') as MsgKey) : '';
       this.resultStars = stars;
@@ -494,12 +553,15 @@ export class PlayScene extends Phaser.Scene {
       this.replay = undefined;
       this.lives -= 1;
       this.deaths += 1;
-      this.showResult(analyzeCatch(this.spec, this.inputLog, catchTick, this.world.guardian.phaseStart));
+      const fallback = analyzeCatch(this.spec, this.inputLog, catchTick, this.world.guardian.phaseStart);
+      this.trackFail(fallback, catchTick);
+      this.showResult(fallback);
       return;
     }
     const analysis = analyzeCatch(this.spec, this.inputLog, catchTick, this.world.guardian.phaseStart);
     this.lives -= 1;
     this.deaths += 1;
+    this.trackFail(analysis, catchTick);
     this.replay = {
       states,
       pos: 0,
@@ -511,6 +573,19 @@ export class PlayScene extends Phaser.Scene {
     this.mode = 'replay';
   }
 
+  private trackFail(a: CatchAnalysis, catchTick: number): void {
+    track('stage_fail', {
+      stage: this.stage,
+      cause: a.kind,
+      lateMs: a.lateTicks !== undefined ? Math.round(TICKS_TO_MS(a.lateTicks)) : undefined,
+      speedMps: toMps(this.lastCaughtSpeed),
+      tick: catchTick,
+      deaths: this.deaths,
+      assist: this.spec.assistGraceTicks,
+    });
+    this.flushPerf();
+  }
+
   private showResult(analysis?: CatchAnalysis): void {
     const a = analysis ?? this.replay?.analysis;
     this.tagText.setText('');
@@ -518,6 +593,7 @@ export class PlayScene extends Phaser.Scene {
     this.mode = this.lives > 0 ? 'caught' : 'out';
     if (this.mode === 'out') {
       saveProgress({ ...getProgress(), assist: adjustAssist(this.spec.assistGraceTicks, { cleared: false, deaths: this.deaths }) });
+      track('stage_out', { stage: this.stage, deaths: this.deaths, assist: this.spec.assistGraceTicks });
     }
     const lang = this.lang;
     const mps = toMps(this.lastCaughtSpeed);
