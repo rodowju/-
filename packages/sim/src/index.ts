@@ -6,5 +6,7 @@ export { createWorld, step, isPlayerDone, gradeRelease, comboMultiplier, PLAYER_
 export { hashState } from './hash';
 export { getBotInputs } from './bots';
 export { guardianSchedule } from './guardian';
-export { makeReplay, serializeReplay, parseReplay, runReplay, SnapshotBuffer } from './replay';
+export { makeReplay, serializeReplay, parseReplay, runReplay, resimulate, SnapshotBuffer } from './replay';
+export { analyzeCatch, starsFor } from './analysis';
+export type { CatchAnalysis, CatchKind } from './analysis';
 export type { ReplayData, RunOptions, RunResult } from './replay';

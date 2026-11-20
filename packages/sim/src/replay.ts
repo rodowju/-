@@ -86,3 +86,30 @@ export class SnapshotBuffer {
     return undefined;
   }
 }
+
+/**
+ * start 상태에서 시작해 untilTick 까지의 모든 tick 상태를 재현한다 (탈락 리플레이용).
+ * 반환 배열의 첫 원소는 start, 마지막 원소는 tick === untilTick 인 상태.
+ */
+export function resimulate(
+  spec: StageSpec,
+  inputs: readonly InputEvent[],
+  start: WorldState,
+  untilTick: number,
+): WorldState[] {
+  const sorted = inputs.filter((i) => i.tick >= start.tick).sort((a, b) => a.tick - b.tick);
+  const states: WorldState[] = [start];
+  let s = start;
+  let ptr = 0;
+  while (s.tick < untilTick) {
+    const now: InputEvent[] = [];
+    while (ptr < sorted.length && (sorted[ptr]?.tick ?? Infinity) <= s.tick) {
+      const ev = sorted[ptr];
+      if (ev && ev.tick === s.tick) now.push(ev);
+      ptr++;
+    }
+    s = step(s, spec, now);
+    states.push(s);
+  }
+  return states;
+}

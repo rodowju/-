@@ -2,6 +2,13 @@ import Phaser from 'phaser';
 import {
   CC_GOOD_TICKS,
   MAX_SPEED,
+  SnapshotBuffer,
+  analyzeCatch,
+  comboMultiplier,
+  hashState,
+  resimulate,
+  starsFor,
+  type CatchAnalysis,
   PLAYER_ID,
   SAFE_RELEASE_TICKS,
   TICK_HZ,
@@ -17,6 +24,7 @@ import {
   type WorldState,
 } from '@freeze/sim';
 import { COLORS, GAME_H, GAME_W, PLAYER_Y, PPM, TRACK_CX, TRACK_LEFT, TRACK_RIGHT } from '../layout';
+import { bestStars, saveStars } from '../services/storage';
 
 const STEP_MS = 1000 / TICK_HZ;
 const UM_PER_M = 1_000_000;
@@ -28,10 +36,26 @@ const params = new URLSearchParams(location.search);
 const DEBUG = params.get('debug') === '1';
 const BASE_SEED = Number(params.get('seed') ?? 20260101) >>> 0;
 
-type Mode = 'play' | 'caught' | 'cleared';
+type Mode = 'play' | 'replay' | 'caught' | 'out' | 'cleared';
+
+const MAX_LIVES = 3;
+/** 탈락 리플레이: 탈락 전 3초 재생, 마지막 0.5초는 0.5배속 (GDD §5) */
+const REPLAY_TICKS = 180;
+const SLOWMO_TICKS = 30;
+const REPLAY_HOLD_MS = 700;
 
 interface SceneData {
   stage?: number;
+  lives?: number;
+}
+
+interface ReplayPlayback {
+  states: WorldState[];
+  pos: number;
+  holdMs: number;
+  startedAt: number;
+  analysis: CatchAnalysis;
+  releaseTicks: number[];
 }
 
 export class PlayScene extends Phaser.Scene {
@@ -47,6 +71,12 @@ export class PlayScene extends Phaser.Scene {
   private holding = false;
   private started = false;
   private lastCaughtSpeed = 0;
+  private lastCatchTick = 0;
+  private lives = MAX_LIVES;
+  private maxMult = 1;
+  private snapBuf!: SnapshotBuffer;
+  private initialWorld!: WorldState;
+  private replay?: ReplayPlayback;
 
   private gfx!: Phaser.GameObjects.Graphics;
   private overlay!: Phaser.GameObjects.Graphics;
@@ -58,6 +88,7 @@ export class PlayScene extends Phaser.Scene {
   private distText!: Phaser.GameObjects.Text;
   private bigText!: Phaser.GameObjects.Text;
   private subText!: Phaser.GameObjects.Text;
+  private tagText!: Phaser.GameObjects.Text;
   private debugText?: Phaser.GameObjects.Text;
 
   constructor() {
@@ -66,12 +97,18 @@ export class PlayScene extends Phaser.Scene {
 
   init(data: SceneData): void {
     this.stage = data.stage ?? Math.max(1, Number(params.get('stage') ?? 1) | 0);
+    this.lives = data.lives ?? MAX_LIVES;
   }
 
   create(): void {
     this.spec = makeStageSpec(this.stage, BASE_SEED + this.stage * 7919);
     this.world = createWorld(this.spec);
     this.prev = this.world;
+    this.initialWorld = this.world;
+    this.snapBuf = new SnapshotBuffer(14, 30);
+    this.snapBuf.push(this.world);
+    this.replay = undefined;
+    this.maxMult = 1;
     this.acc = 0;
     this.mode = 'play';
     this.pending = [];
@@ -84,8 +121,12 @@ export class PlayScene extends Phaser.Scene {
     const mono = { fontFamily: 'system-ui, sans-serif' };
     this.scoreText = this.add.text(12, 10, '0', { ...mono, fontSize: '22px', color: COLORS.text }).setDepth(10);
     this.stageText = this.add
-      .text(12, 38, `STAGE ${this.stage}`, { ...mono, fontSize: '12px', color: COLORS.dim })
+      .text(8, 38, `STAGE ${this.stage}`, { ...mono, fontSize: '11px', color: COLORS.dim })
       .setDepth(10);
+    this.tagText = this.add
+      .text(GAME_W / 2, GAME_H - 40, '', { ...mono, fontSize: '16px', color: '#f6e05e', fontStyle: 'bold' })
+      .setOrigin(0.5)
+      .setDepth(25);
     this.comboText = this.add
       .text(GAME_W - 12, 10, '', { ...mono, fontSize: '22px', color: COLORS.perfect })
       .setOrigin(1, 0)
@@ -95,7 +136,7 @@ export class PlayScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setDepth(10);
     this.distText = this.add
-      .text(GAME_W - 12, 38, '', { ...mono, fontSize: '12px', color: COLORS.dim })
+      .text(GAME_W - 6, 38, '', { ...mono, fontSize: '11px', color: COLORS.dim })
       .setOrigin(1, 0)
       .setDepth(10);
     this.hintText = this.add
@@ -127,6 +168,8 @@ export class PlayScene extends Phaser.Scene {
       spec: () => this.spec,
       inputLog: () => this.inputLog,
       mode: () => this.mode,
+      lives: () => this.lives,
+      replay: () => (this.replay ? { pos: this.replay.pos, n: this.replay.states.length, analysis: this.replay.analysis } : null),
     };
   }
 
@@ -150,10 +193,17 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private onPress(): void {
+    if (this.mode === 'replay') {
+      // 리플레이 건너뛰기 (달리던 손가락에 의한 오입력 방지로 잠금)
+      if (this.time.now - (this.replay?.startedAt ?? 0) > 350) this.showResult();
+      return;
+    }
     if (this.mode !== 'play') {
       // 결과 화면: 입력 잠금(실수 탭 방지) 후 다음으로
       if (this.time.now - this.modeSince < 500) return;
-      this.scene.restart({ stage: this.mode === 'cleared' ? this.stage + 1 : this.stage });
+      if (this.mode === 'cleared') this.scene.restart({ stage: this.stage + 1, lives: MAX_LIVES });
+      else if (this.mode === 'out') this.scene.restart({ stage: this.stage, lives: MAX_LIVES });
+      else this.scene.restart({ stage: this.stage, lives: this.lives });
       return;
     }
     if (this.holding) return;
@@ -181,12 +231,38 @@ export class PlayScene extends Phaser.Scene {
         this.prev = this.world;
         this.world = step(this.world, this.spec, this.pending);
         this.pending = this.pending.filter((e) => e.tick > this.world.tick - 1);
+        this.snapBuf.push(this.world);
+        this.maxMult = Math.max(this.maxMult, comboMultiplier(this.world.comboPoints));
         for (const e of this.world.events) this.onEvent(e);
         this.acc -= STEP_MS;
         if (isPlayerDone(this.world)) this.finishRun();
       }
+      this.render(this.world, this.prev, this.acc / STEP_MS);
+    } else if (this.mode === 'replay' && this.replay) {
+      this.updateReplay(Math.min(delta, 100));
+    } else {
+      this.render(this.world, this.prev, 1, this.replay?.releaseTicks);
     }
-    this.render(this.mode === 'play' ? this.acc / STEP_MS : 1);
+  }
+
+  private updateReplay(delta: number): void {
+    const r = this.replay;
+    if (!r) return;
+    const last = r.states.length - 1;
+    const slow = last - r.pos <= SLOWMO_TICKS;
+    r.pos = Math.min(last, r.pos + (delta / STEP_MS) * (slow ? 0.5 : 1));
+    if (r.pos >= last) {
+      r.holdMs += delta;
+      if (r.holdMs >= REPLAY_HOLD_MS) {
+        this.showResult();
+        return;
+      }
+    }
+    const i = Math.floor(r.pos);
+    const a = r.states[Math.min(i, last)] ?? this.world;
+    const b = r.states[Math.min(i + 1, last)] ?? a;
+    this.render(b, a, i >= last ? 1 : r.pos - i, r.releaseTicks);
+    this.tagText.setText(slow ? '▶ REPLAY  (slow)' : '▶ REPLAY  · tap to skip');
   }
 
   private onEvent(e: SimEvent): void {
@@ -202,6 +278,7 @@ export class PlayScene extends Phaser.Scene {
       case 'caught':
         if (e.runner === PLAYER_ID) {
           this.lastCaughtSpeed = e.speed;
+          this.lastCatchTick = e.tick;
           navigator.vibrate?.([40, 30, 80]);
         }
         break;
@@ -225,19 +302,71 @@ export class PlayScene extends Phaser.Scene {
 
   private finishRun(): void {
     const p = this.world.runners[PLAYER_ID];
+    this.holding = false;
     this.modeSince = this.time.now;
     if (p?.status === 'finished') {
       this.mode = 'cleared';
+      const stars = starsFor(this.spec, p.endTick, this.maxMult);
+      const best = bestStars(this.stage);
+      const isNew = saveStars(this.stage, stars);
+      const star = (n: number): string => '★'.repeat(n) + '☆'.repeat(3 - n);
       this.bigText.setText('CLEAR').setColor('#f6e05e');
-      this.subText.setText(`Place ${p.place} / ${this.world.runners.length}\nScore ${this.world.score}\n\nTap for next stage`);
-    } else {
-      this.mode = 'caught';
-      const mps = toMps(this.lastCaughtSpeed);
-      this.bigText.setText('CAUGHT').setColor('#fc8181');
       this.subText.setText(
-        `You moved at ${mps.toFixed(2)} m/s\n(limit ${toMps(V_TOL).toFixed(2)} m/s)\n\nTap to retry`,
+        `${star(stars)}${isNew && best > 0 ? '  (new best)' : ''}\n\nPlace ${p.place} / ${this.world.runners.length}\nScore ${this.world.score}\n\nTap for next stage`,
       );
+      return;
     }
+    this.beginReplay();
+  }
+
+  /** 탈락 직후: 최근 3초를 입력 로그로 결정론적으로 재현해 재생한다. */
+  private beginReplay(): void {
+    const catchTick = this.lastCatchTick;
+    const start = this.snapBuf.latestAtOrBefore(Math.max(0, catchTick - REPLAY_TICKS)) ?? this.initialWorld;
+    const states = resimulate(this.spec, this.inputLog, start, catchTick + 1);
+    const finalState = states[states.length - 1];
+    if (!finalState || hashState(finalState) !== hashState(this.world)) {
+      // 결정론이 깨진 경우: 리플레이를 건너뛰고 결과만 표시 (조용히 틀린 재생을 보여주지 않는다)
+      console.error('replay desync: resimulated state differs from live state');
+      this.replay = undefined;
+      this.lives -= 1;
+      this.showResult(analyzeCatch(this.spec, this.inputLog, catchTick, this.world.guardian.phaseStart));
+      return;
+    }
+    const analysis = analyzeCatch(this.spec, this.inputLog, catchTick, this.world.guardian.phaseStart);
+    this.lives -= 1;
+    this.replay = {
+      states,
+      pos: 0,
+      holdMs: 0,
+      startedAt: this.time.now,
+      analysis,
+      releaseTicks: this.inputLog.filter((e) => e.type === 'up').map((e) => e.tick),
+    };
+    this.mode = 'replay';
+  }
+
+  private showResult(analysis?: CatchAnalysis): void {
+    const a = analysis ?? this.replay?.analysis;
+    this.tagText.setText('');
+    this.modeSince = this.time.now;
+    this.mode = this.lives > 0 ? 'caught' : 'out';
+    const mps = toMps(this.lastCaughtSpeed);
+    let why = '';
+    if (a?.kind === 'late-release') {
+      why = `You released ${Math.round(TICKS_TO_MS(a.lateTicks ?? 0))} ms too late`;
+    } else if (a?.kind === 'no-release') {
+      why = 'You were still holding when FREEZE began';
+    } else if (a?.kind === 'pressed-in-watch') {
+      why = 'You started moving during FREEZE';
+    }
+    this.bigText.setText(this.mode === 'out' ? 'OUT OF LIVES' : 'CAUGHT').setColor('#fc8181');
+    this.bigText.setFontSize(this.mode === 'out' ? 30 : 40);
+    this.subText.setText(
+      `${why}\n${mps.toFixed(2)} m/s  (limit ${toMps(V_TOL).toFixed(2)} m/s)\n\n${
+        this.mode === 'out' ? 'Tap to restart the stage' : `Lives left: ${this.lives}\nTap to retry`
+      }`,
+    );
   }
 
   // ───────────────────────── 렌더 ─────────────────────────
@@ -245,14 +374,12 @@ export class PlayScene extends Phaser.Scene {
     return a + (b - a) * t;
   }
 
-  private render(alpha: number): void {
+  private render(cur: WorldState, pr: WorldState, alpha: number, releaseTicks?: number[]): void {
     const g = this.gfx;
     const o = this.overlay;
     g.clear();
     o.clear();
 
-    const cur = this.world;
-    const pr = this.prev;
     const phase = cur.guardian.phase;
     const player = cur.runners[PLAYER_ID];
     const prevPlayer = pr.runners[PLAYER_ID];
@@ -294,15 +421,19 @@ export class PlayScene extends Phaser.Scene {
     g.lineStyle(2, 0x000000, 0.35).strokeCircle(TRACK_CX, PLAYER_Y, 11);
 
     this.drawGuardian(g, cur);
-    this.drawTimingBar(g, cur);
+    this.drawTimingBar(g, cur, releaseTicks);
     this.drawSpeedBar(g, player.vel);
 
     // Watch 중 화면 가장자리 경고
     if (phase === 'watch') {
       o.lineStyle(10, COLORS.watch, 0.55).strokeRect(0, 0, GAME_W, GAME_H);
     }
-    if (this.mode !== 'play') {
+    if (this.mode === 'caught' || this.mode === 'out' || this.mode === 'cleared') {
       o.fillStyle(0x000000, 0.55).fillRect(0, 0, GAME_W, GAME_H);
+    }
+    // 목숨
+    for (let i = 0; i < MAX_LIVES; i++) {
+      o.fillStyle(i < this.lives ? 0xfc8181 : 0x3a4150, 1).fillCircle(14 + i * 15, 66, 5);
     }
 
     // HUD
@@ -315,6 +446,7 @@ export class PlayScene extends Phaser.Scene {
     );
     this.phaseText.setColor(phase === 'watch' ? '#fc8181' : phase === 'turn' ? '#ecc94b' : COLORS.dim);
     this.hintText.setVisible(!this.started && this.mode === 'play');
+    if (this.mode === 'play') this.tagText.setText('');
     if (this.debugText) {
       const g0 = cur.guardian;
       this.debugText.setText(
@@ -371,30 +503,40 @@ export class PlayScene extends Phaser.Scene {
   }
 
   /**
-   * 릴리즈 타이밍 바: Turn 시작부터 D 까지 커서가 이동. 오른쪽일수록 Perfect.
-   * 플레이어가 "언제 놓아야 보너스인지" 시각적으로 학습하게 한다.
+   * 릴리즈 타이밍 바: D−18 tick ~ D+12 tick. D 까지 Good → Great → Perfect, 이후는 빨간 영역(탈락).
+   * 리플레이 중에는 플레이어가 실제로 손을 뗀 시점을 흰 삼각형으로 표시한다.
    */
-  private drawTimingBar(g: Phaser.GameObjects.Graphics, s: WorldState): void {
+  private drawTimingBar(g: Phaser.GameObjects.Graphics, s: WorldState, releaseTicks?: number[]): void {
     const { phase, phaseStart } = s.guardian;
     if (phase !== 'turn' && phase !== 'watch') return;
     const ws = phase === 'turn' ? phaseStart + TURN_TICKS : phaseStart;
     const d = ws + SAFE_RELEASE_TICKS;
-    const span = CC_GOOD_TICKS + 2; // D-18 .. D 구간
-    const startTick = d - span;
+    const before = CC_GOOD_TICKS; // 18
+    const after = 12;
+    const span = before + after;
+    const startTick = d - before;
     const x0 = 80;
     const w = GAME_W - 160;
     const y = 140;
-    const zone = (from: number, to: number, c: number): void => {
-      g.fillStyle(c, 0.9).fillRect(x0 + (from / span) * w, y, ((to - from) / span) * w, 8);
+    const xOf = (tick: number): number => x0 + (Math.max(0, Math.min(span, tick - startTick)) / span) * w;
+    const zone = (fromTick: number, toTick: number, c: number, a = 0.9): void => {
+      g.fillStyle(c, a).fillRect(xOf(fromTick), y, xOf(toTick) - xOf(fromTick), 8);
     };
-    zone(0, span - 12 - 0, 0x2b6cb0); // good
-    zone(span - 12, span - 6, 0x2f855a); // great
-    zone(span - 6, span, 0xd69e2e); // perfect
-    const t = Math.max(0, Math.min(span + 6, s.tick - startTick));
-    const cx = x0 + (t / span) * w;
-    g.fillStyle(0xffffff, 1).fillRect(cx - 1.5, y - 5, 3, 18);
-    // D 이후(너무 늦음)는 빨간 영역
-    if (s.tick > d) g.fillStyle(COLORS.watch, 0.9).fillRect(x0 + w, y, 16, 8);
+    zone(d - 18, d - 12, 0x2b6cb0); // good
+    zone(d - 12, d - 6, 0x2f855a); // great
+    zone(d - 6, d, 0xd69e2e); // perfect
+    const assist = this.spec.assistGraceTicks;
+    if (assist > 0) zone(d, d + assist, 0xd69e2e, 0.45); // Assist 로 허용되는 늦은 구간
+    zone(d + assist, d + after, COLORS.watch);
+    g.fillStyle(0xffffff, 0.8).fillRect(xOf(d + assist) - 1, y - 3, 2, 14); // 마감선
+    g.fillStyle(0xffffff, 1).fillRect(xOf(s.tick) - 1.5, y - 5, 3, 18);
+    if (releaseTicks) {
+      for (const t of releaseTicks) {
+        if (t < startTick || t > d + after) continue;
+        const px = xOf(t);
+        g.fillStyle(0xffffff, 1).fillTriangle(px - 5, y + 28, px + 5, y + 28, px, y + 16);
+      }
+    }
   }
 
   private drawSpeedBar(g: Phaser.GameObjects.Graphics, vel: number): void {
