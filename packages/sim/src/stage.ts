@@ -114,7 +114,20 @@ function parPctFor(stage: number): number {
   return PAR_PCT[Math.min(stage, PAR_PCT.length) - 1] ?? 110;
 }
 
-export function makeStageSpec(stage: number, seed: number, assistGraceTicks?: number): StageSpec {
+export interface StageOptions {
+  /** 사람 플레이어 수 (기본 1). 늘어난 만큼 봇이 줄어 총 러너 수는 유지된다. */
+  readonly humans?: number;
+}
+
+/** 스테이지의 기준 시드 — 고스트/리더보드는 이 시드로만 비교한다. */
+export const CANONICAL_SEED_BASE = 20260101;
+export function canonicalSeed(stage: number): number {
+  return (CANONICAL_SEED_BASE + stage * 7919) >>> 0;
+}
+
+export function makeStageSpec(stage: number, seed: number, assistGraceTicks?: number, opts: StageOptions = {}): StageSpec {
+  const humans = opts.humans ?? 1;
+  if (!Number.isInteger(humans) || humans < 1 || humans > 16) throw new RangeError('humans must be 1..16');
   if (!Number.isInteger(stage) || stage < 1) throw new RangeError('stage must be an integer >= 1');
   const tier = tierFor(stage);
   const anchor = anchorFor(stage);
@@ -133,7 +146,8 @@ export function makeStageSpec(stage: number, seed: number, assistGraceTicks?: nu
     trackLength,
     chantTicks,
     watchTicks,
-    botCount: tier.bots,
+    botCount: Math.max(0, tier.bots - (humans - 1)),
+    humans,
     botMistakePermille: anchor.mistake,
     assistGraceTicks: Math.max(0, Math.min(ASSIST_CAP, assistGraceTicks ?? defaultAssist(stage))),
     parTicks: 0,

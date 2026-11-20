@@ -52,4 +52,4 @@ export const TIME_BONUS_PER_6_TICKS = 10;
 export const CYCLE_COUNT = 64;
 
 /** 시뮬레이션 규칙 버전. 리플레이 호환성 판단에 사용. */
-export const SIM_VERSION = 2;
+export const SIM_VERSION = 3;

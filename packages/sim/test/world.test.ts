@@ -82,7 +82,7 @@ describe('판정', () => {
       sch.turnbackStart,
     );
     expect(s.runners[0]?.status).toBe('running');
-    expect(s.comboPoints).toBe(0);
+    expect(s.runners[0]!.combo).toBe(0);
   });
   it('Assist 는 늦은 릴리즈를 허용한다', () => {
     const assisted = noBots(1, 1);
@@ -128,13 +128,13 @@ describe('Close Call 등급', () => {
       s = step(s, spec, inputs.filter((i) => i.tick === s.tick));
       for (const e of s.events) if (e.type === 'closeCall') grades.push(e.grade);
       if (s.tick === sch.turnbackStart + 1) {
-        expect(s.comboPoints).toBe(4);
-        expect(s.score).toBe(100);
+        expect(s.runners[0]!.combo).toBe(4);
+        expect(s.runners[0]!.score).toBe(100);
       }
     }
     expect(grades).toEqual(['perfect']);
     expect(s.runners[0]?.status).toBe('caught');
-    expect(s.comboPoints).toBe(0);
+    expect(s.runners[0]!.combo).toBe(0);
   });
 });
 
@@ -148,7 +148,7 @@ describe('완주', () => {
     }
     expect(s.runners[0]?.status).toBe('finished');
     expect(s.runners[0]?.place).toBe(1);
-    expect(s.score).toBeGreaterThanOrEqual(CLEAR_SCORE);
+    expect(s.runners[0]!.score).toBeGreaterThanOrEqual(CLEAR_SCORE);
   });
 });
 

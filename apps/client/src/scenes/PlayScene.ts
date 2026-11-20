@@ -25,12 +25,15 @@ import {
   type StageSpec,
   type WorldState,
 } from '@freeze/sim';
-import { COLORS, GAME_H, GAME_W, PLAYER_Y, PPM, TRACK_CX, TRACK_LEFT, TRACK_RIGHT } from '../layout';
+import { COLORS, GAME_W, PLAYER_Y, TRACK_CX } from '../layout';
 import { addCoins, applyClear, nextStageOf } from '../logic/progress';
 import { shouldShowInterstitial } from '../logic/adPolicy';
 import { t, type MsgKey } from '../logic/i18n';
 import { DEFAULT_EQUIPPED, skinById, type Skin, type SkinCategory } from '../logic/skins';
-import { drawGuardianDeco, drawRunner, drawTrail, spawnStopFx } from '../render/skinDraw';
+import { spawnStopFx } from '../render/skinDraw';
+import { WorldView } from '../render/WorldView';
+import { fetchGhost, ghostTrack, onlineAvailable, submitGhost } from '../services/net';
+import { isAnalyticsEnabled } from '../services/analytics';
 import { ads } from '../services/ads';
 import { sfx } from '../audio/sfx';
 import { summarizeFrames } from '../logic/analytics';
@@ -46,6 +49,8 @@ const toMps = (v: number): number => (v * TICK_HZ) / UM_PER_M;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.get('debug') === '1';
 const BASE_SEED = Number(params.get('seed') ?? 20260101) >>> 0;
+/** ?online=1: 시작하자마자 온라인 대전으로 (테스트·공유 링크용) */
+let onlineEntry = params.get('online') === '1';
 
 type Mode = 'play' | 'replay' | 'caught' | 'out' | 'cleared';
 
@@ -114,20 +119,14 @@ export class PlayScene extends Phaser.Scene {
   private frameDeltas: number[] = [];
   private lastBeatKey = '';
   private skins!: Record<SkinCategory, Skin>;
+  /** 고스트: tick 별 위치(m) */
+  private ghostPos?: Float64Array;
+  private ghostFinish = 0;
+  private boardRank = 0;
+  /** 비동기 응답이 재시작된 씬에 섞이지 않도록 하는 실행 번호 */
+  private runId = 0;
 
-  private gfx!: Phaser.GameObjects.Graphics;
-  private overlay!: Phaser.GameObjects.Graphics;
-  private scoreText!: Phaser.GameObjects.Text;
-  private comboText!: Phaser.GameObjects.Text;
-  private stageText!: Phaser.GameObjects.Text;
-  private phaseText!: Phaser.GameObjects.Text;
-  private hintText!: Phaser.GameObjects.Text;
-  private distText!: Phaser.GameObjects.Text;
-  private bigText!: Phaser.GameObjects.Text;
-  private subText!: Phaser.GameObjects.Text;
-  private tagText!: Phaser.GameObjects.Text;
-  private rankText!: Phaser.GameObjects.Text;
-  private debugText?: Phaser.GameObjects.Text;
+  private view!: WorldView;
 
   constructor() {
     super('Play');
@@ -144,6 +143,11 @@ export class PlayScene extends Phaser.Scene {
   }
 
   create(): void {
+    if (onlineEntry) {
+      onlineEntry = false;
+      this.scene.start('Online', { stage: this.stage });
+      return;
+    }
     this.lang = getLang();
     const eq = getProgress().equipped;
     const pick = (c: SkinCategory): Skin =>
@@ -155,6 +159,17 @@ export class PlayScene extends Phaser.Scene {
     this.world = createWorld(this.spec);
     this.prev = this.world;
     this.initialWorld = this.world;
+    const run = ++this.runId;
+    this.ghostPos = undefined;
+    this.ghostFinish = 0;
+    this.boardRank = 0;
+    if (onlineAvailable() && !params.has('seed')) {
+      void fetchGhost(this.stage, this.spec.parTicks).then((g) => {
+        if (!g || run !== this.runId || g.stage !== this.stage) return;
+        this.ghostPos = ghostTrack(g);
+        this.ghostFinish = g.finishTick;
+      });
+    }
     this.frameDeltas = [];
     this.lastBeatKey = '';
     sfx.setMuted(getProgress().muted === true);
@@ -170,55 +185,7 @@ export class PlayScene extends Phaser.Scene {
     this.holding = false;
     this.started = false;
 
-    this.gfx = this.add.graphics();
-    this.overlay = this.add.graphics().setDepth(20);
-    const mono = { fontFamily: 'system-ui, sans-serif' };
-    this.scoreText = this.add.text(12, 10, '0', { ...mono, fontSize: '22px', color: COLORS.text }).setDepth(10);
-    this.stageText = this.add
-      .text(8, 38, t(this.lang, 'hud.stage', { n: this.stage }), { ...mono, fontSize: '11px', color: COLORS.dim })
-      .setDepth(10);
-    this.tagText = this.add
-      .text(GAME_W / 2, GAME_H - 40, '', { ...mono, fontSize: '16px', color: '#f6e05e', fontStyle: 'bold' })
-      .setOrigin(0.5)
-      .setDepth(25);
-    this.comboText = this.add
-      .text(GAME_W - 12, 10, '', { ...mono, fontSize: '22px', color: COLORS.perfect })
-      .setOrigin(1, 0)
-      .setDepth(10);
-    this.rankText = this.add
-      .text(GAME_W - 6, 52, '', { ...mono, fontSize: '11px', color: COLORS.dim, align: 'right' })
-      .setOrigin(1, 0)
-      .setDepth(10);
-    this.phaseText = this.add
-      .text(GAME_W / 2, 118, '', { ...mono, fontSize: '13px', color: COLORS.dim })
-      .setOrigin(0.5, 0)
-      .setDepth(10);
-    this.distText = this.add
-      .text(GAME_W - 6, 38, '', { ...mono, fontSize: '11px', color: COLORS.dim })
-      .setOrigin(1, 0)
-      .setDepth(10);
-    this.hintText = this.add
-      .text(GAME_W / 2, GAME_H - 70, `${t(this.lang, 'hint.hold')}\n${t(this.lang, 'hint.release')}`, {
-        ...mono,
-        fontSize: '18px',
-        color: COLORS.text,
-        align: 'center',
-      })
-      .setOrigin(0.5)
-      .setDepth(10);
-    this.bigText = this.add
-      .text(GAME_W / 2, GAME_H / 2 - 40, '', { ...mono, fontSize: '40px', color: COLORS.text, fontStyle: 'bold' })
-      .setOrigin(0.5)
-      .setDepth(30);
-    this.subText = this.add
-      .text(GAME_W / 2, GAME_H / 2 + 10, '', { ...mono, fontSize: '15px', color: COLORS.text, align: 'center' })
-      .setOrigin(0.5, 0)
-      .setDepth(30);
-    if (DEBUG) {
-      this.debugText = this.add
-        .text(8, GAME_H - 80, '', { fontFamily: 'monospace', fontSize: '10px', color: '#a0aec0' })
-        .setDepth(40);
-    }
+    this.view = new WorldView(this, this.spec, this.skins, this.lang, t(this.lang, 'hud.stage', { n: this.stage }), DEBUG);
 
     this.bindInput();
     (window as unknown as { __freeze: unknown }).__freeze = {
@@ -231,6 +198,7 @@ export class PlayScene extends Phaser.Scene {
       press: (i: number) => this.btns[i]?.onClick(),
       progress: () => getProgress(),
       lang: () => this.lang,
+      ghost: () => (this.ghostPos ? { len: this.ghostPos.length, finish: this.ghostFinish } : null),
       deaths: () => this.deaths,
       replay: () => (this.replay ? { pos: this.replay.pos, n: this.replay.states.length, analysis: this.replay.analysis } : null),
     };
@@ -380,9 +348,10 @@ export class PlayScene extends Phaser.Scene {
   private addResultButtons(): void {
     this.clearButtons();
     const lang = this.lang;
-    if (this.mode === 'cleared' && !this.doubled) this.addButton(522, t(lang, 'ad.double'), () => void this.watchDouble(), 0x2b6cb0);
-    if (this.mode === 'out' && !this.revived) this.addButton(522, t(lang, 'ad.revive'), () => void this.watchRevive(), 0x2b6cb0);
-    this.addButton(572, t(lang, 'shop.open'), () => this.scene.start('Shop', { back: this.nextSceneData() }));
+    if (this.mode === 'cleared' && !this.doubled) this.addButton(548, t(lang, 'ad.double'), () => void this.watchDouble(), 0x2b6cb0);
+    if (this.mode === 'out' && !this.revived) this.addButton(548, t(lang, 'ad.revive'), () => void this.watchRevive(), 0x2b6cb0);
+    this.addButton(596, t(lang, 'shop.open'), () => this.scene.start('Shop', { back: this.nextSceneData() }));
+    if (onlineAvailable()) this.addButton(500, t(lang, 'online.start'), () => this.scene.start('Online', { stage: this.stage }), 0x553c9a);
   }
 
   private onRelease(): void {
@@ -391,9 +360,18 @@ export class PlayScene extends Phaser.Scene {
     this.queue({ tick: this.world.tick, type: 'up' });
   }
 
-  private queue(ev: InputEvent): void {
+  private queue(raw: InputEvent): void {
+    // 같은 tick 에 down/up 이 겹치지 않도록 tick 을 엄격 증가시킨다 (고스트 서버 검증·멀티플레이와 같은 규칙)
+    const last = this.inputLog[this.inputLog.length - 1];
+    const ev: InputEvent = last && raw.tick <= last.tick ? { ...raw, tick: last.tick + 1 } : raw;
     this.pending.push(ev);
     this.inputLog.push(ev);
+  }
+
+  private ghostAt(tick: number): number | undefined {
+    const g = this.ghostPos;
+    if (!g || g.length === 0) return undefined;
+    return g[Math.min(tick, g.length - 1)];
   }
 
   // ───────────────────────── 루프 ─────────────────────────
@@ -406,13 +384,14 @@ export class PlayScene extends Phaser.Scene {
         this.world = step(this.world, this.spec, this.pending);
         this.pending = this.pending.filter((e) => e.tick > this.world.tick - 1);
         this.snapBuf.push(this.world);
-        this.maxMult = Math.max(this.maxMult, comboMultiplier(this.world.comboPoints));
+        this.maxMult = Math.max(this.maxMult, comboMultiplier(this.world.runners[PLAYER_ID]?.combo ?? 0));
         for (const e of this.world.events) this.onEvent(e);
         this.acc -= STEP_MS;
         if (isPlayerDone(this.world)) this.finishRun();
       }
       this.beatSfx();
       this.render(this.world, this.prev, this.acc / STEP_MS);
+      this.view.tag.setText('');
     } else if (this.mode === 'replay' && this.replay) {
       this.updateReplay(Math.min(delta, 100));
     } else {
@@ -420,11 +399,23 @@ export class PlayScene extends Phaser.Scene {
     }
   }
 
+  private render(cur: WorldState, pr: WorldState, alpha: number, releaseTicks?: readonly number[]): void {
+    this.view.draw(cur, pr, {
+      me: PLAYER_ID,
+      alpha,
+      dim: this.mode === 'caught' || this.mode === 'out' || this.mode === 'cleared',
+      lives: { left: this.lives, max: MAX_LIVES },
+      showHint: !this.started && this.mode === 'play',
+      ...(releaseTicks ? { releaseTicks } : {}),
+      ...(this.ghostAt(cur.tick) !== undefined ? { ghostM: this.ghostAt(cur.tick) } : {}),
+    });
+  }
+
   /** 노래(Chant)를 5박으로 나눈 박자음. 박자는 항상 시각 펄스와 함께 제공된다. */
   private beatSfx(): void {
     const g = this.world.guardian;
     if (g.phase !== 'chant') return;
-    const dur = this.chantLen(g.cycleIdx);
+    const dur = this.view.chantLen(g.cycleIdx);
     const beat = Math.floor(((this.world.tick - g.phaseStart) * 5) / dur);
     const key = `${g.cycleIdx}:${beat}`;
     if (key !== this.lastBeatKey) {
@@ -456,7 +447,7 @@ export class PlayScene extends Phaser.Scene {
     const a = r.states[Math.min(i, last)] ?? this.world;
     const b = r.states[Math.min(i + 1, last)] ?? a;
     this.render(b, a, i >= last ? 1 : r.pos - i, r.releaseTicks);
-    this.tagText.setText(t(this.lang, slow ? 'replay.slow' : 'replay.playing'));
+    this.view.tag.setText(t(this.lang, slow ? 'replay.slow' : 'replay.playing'));
   }
 
   private onEvent(e: SimEvent): void {
@@ -491,16 +482,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private popup(text: string, color: string, sub: string): void {
-    const t = this.add
-      .text(TRACK_CX, PLAYER_Y - 60, sub ? `${text}  ${sub}` : text, {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '22px',
-        color,
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5)
-      .setDepth(15);
-    this.tweens.add({ targets: t, y: t.y - 50, alpha: 0, duration: 700, ease: 'Cubic.easeOut', onComplete: () => t.destroy() });
+    this.view.popup(text, color, sub);
   }
 
   private finishRun(): void {
@@ -523,17 +505,29 @@ export class PlayScene extends Phaser.Scene {
         par: this.spec.parTicks,
         place: p.place,
         total: this.world.runners.length,
-        score: this.world.score,
+        score: p.score,
         maxMult: this.maxMult,
         deaths: this.deaths,
         assist: this.spec.assistGraceTicks,
         coins: res.coins,
       });
       this.flushPerf();
+      if (this.ghostFinish > 0) track('ghost', { stage: this.stage, action: 'race', diffMs: Math.round(TICKS_TO_MS(p.endTick - this.ghostFinish)) });
+      if (onlineAvailable() && isAnalyticsEnabled() && !params.has('seed')) {
+        const run = this.runId;
+        void submitGhost(this.stage, this.spec.assistGraceTicks, this.inputLog).then((r) => {
+          if (!r || run !== this.runId || this.mode !== 'cleared') return;
+          if (r.stored && r.rank > 0 && this.spec.assistGraceTicks === 0) {
+            this.boardRank = r.rank;
+            track('ghost', { stage: this.stage, action: 'stored', rank: r.rank });
+            this.buildResultText();
+          }
+        });
+      }
       this.newBestStars = res.newBest && prevBest > 0;
       this.unlockedSkinName = res.freeSkin ? t(this.lang, (skinById(res.freeSkin)?.nameKey ?? 'skin.character.ember') as MsgKey) : '';
       this.resultStars = stars;
-      this.bigText.setText(t(this.lang, 'result.clear')).setColor('#f6e05e');
+      this.view.big.setText(t(this.lang, 'result.clear')).setColor('#f6e05e');
       this.buildResultText();
       this.addResultButtons();
       return;
@@ -588,7 +582,7 @@ export class PlayScene extends Phaser.Scene {
 
   private showResult(analysis?: CatchAnalysis): void {
     const a = analysis ?? this.replay?.analysis;
-    this.tagText.setText('');
+    this.view.tag.setText('');
     this.modeSince = this.time.now;
     this.mode = this.lives > 0 ? 'caught' : 'out';
     if (this.mode === 'out') {
@@ -601,9 +595,9 @@ export class PlayScene extends Phaser.Scene {
     if (a?.kind === 'late-release') why = t(lang, 'why.late', { ms: Math.round(TICKS_TO_MS(a.lateTicks ?? 0)) });
     else if (a?.kind === 'no-release') why = t(lang, 'why.noRelease');
     else if (a?.kind === 'pressed-in-watch') why = t(lang, 'why.pressedWatch');
-    this.bigText.setText(t(lang, this.mode === 'out' ? 'result.out' : 'result.caught')).setColor('#fc8181');
-    this.bigText.setFontSize(this.mode === 'out' ? 30 : 40);
-    this.subText.setText(
+    this.view.big.setText(t(lang, this.mode === 'out' ? 'result.out' : 'result.caught')).setColor('#fc8181');
+    this.view.big.setFontSize(this.mode === 'out' ? 30 : 40);
+    this.view.sub.setText(
       `${why}\n${t(lang, 'speed.line', { mps: mps.toFixed(2), limit: toMps(V_TOL).toFixed(2) })}\n\n${
         this.mode === 'out' ? t(lang, 'tap.restart') : `${t(lang, 'lives.left', { n: this.lives })}\n${t(lang, 'tap.retry')}`
       }`,
@@ -622,199 +616,17 @@ export class PlayScene extends Phaser.Scene {
       `${star}${this.newBestStars ? `  ${t(lang, 'clear.newBest')}` : ''}`,
       '',
       t(lang, 'clear.place', { p: p?.place ?? 0, n: this.world.runners.length }),
-      t(lang, 'clear.score', { s: this.world.score }),
+      t(lang, 'clear.score', { s: p?.score ?? 0 }),
       t(lang, 'coins.gained', { n: coins }),
     ];
+    if (this.ghostFinish > 0 && p) {
+      const d = TICKS_TO_MS(p.endTick - this.ghostFinish) / 1000;
+      lines.push(t(lang, 'ghost.diff', { d: `${d > 0 ? '+' : ''}${d.toFixed(2)}` }));
+    }
+    if (this.boardRank > 0) lines.push(t(lang, 'board.rank', { n: this.boardRank }));
     if (this.unlockedSkinName) lines.push('', t(lang, 'skin.unlocked', { name: this.unlockedSkinName }));
     lines.push('', t(lang, 'tap.next'));
-    this.subText.setText(lines.join('\n'));
+    this.view.sub.setText(lines.join('\n'));
   }
 
-  // ───────────────────────── 렌더 ─────────────────────────
-  private lerp(a: number, b: number, t: number): number {
-    return a + (b - a) * t;
-  }
-
-  private render(cur: WorldState, pr: WorldState, alpha: number, releaseTicks?: number[]): void {
-    const g = this.gfx;
-    const o = this.overlay;
-    g.clear();
-    o.clear();
-
-    const phase = cur.guardian.phase;
-    const player = cur.runners[PLAYER_ID];
-    const prevPlayer = pr.runners[PLAYER_ID];
-    if (!player || !prevPlayer) return;
-    const playerM = this.lerp(prevPlayer.pos, player.pos, alpha) / UM_PER_M;
-    const trackM = this.spec.trackLength / UM_PER_M;
-    const sy = (posM: number): number => PLAYER_Y - (posM - playerM) * PPM;
-
-    // 트랙
-    g.fillStyle(COLORS.track, 1).fillRect(TRACK_LEFT, 0, TRACK_RIGHT - TRACK_LEFT, GAME_H);
-    g.lineStyle(2, COLORS.line, 1);
-    g.lineBetween(TRACK_LEFT, 0, TRACK_LEFT, GAME_H);
-    g.lineBetween(TRACK_RIGHT, 0, TRACK_RIGHT, GAME_H);
-    const first = Math.floor(playerM - (GAME_H - PLAYER_Y) / PPM);
-    const last = Math.ceil(playerM + PLAYER_Y / PPM);
-    for (let m = Math.max(0, first); m <= Math.min(trackM, last); m += 1) {
-      if (m % 5 === 0) g.lineBetween(TRACK_LEFT, sy(m), TRACK_RIGHT, sy(m));
-    }
-    // 시작/결승선
-    g.fillStyle(0x4a5563, 1).fillRect(TRACK_LEFT, sy(0) - 2, TRACK_RIGHT - TRACK_LEFT, 4);
-    this.drawFinish(g, sy(trackM));
-
-    // 봇
-    const n = cur.runners.length - 1;
-    for (let i = 1; i < cur.runners.length; i++) {
-      const r = cur.runners[i];
-      const rp = pr.runners[i];
-      if (!r || !rp) continue;
-      const x = n > 1 ? TRACK_LEFT + 22 + ((i - 1) * (TRACK_RIGHT - TRACK_LEFT - 44)) / (n - 1) : TRACK_LEFT + 30;
-      const y = sy(this.lerp(rp.pos, r.pos, alpha) / UM_PER_M);
-      if (y < -10 || y > GAME_H + 10) continue;
-      g.fillStyle(r.status === 'caught' ? COLORS.botOut : COLORS.bot, r.status === 'caught' ? 0.6 : 1);
-      g.fillCircle(x, y, 6);
-    }
-
-    // 플레이어 (스킨은 외형 전용)
-    if (player.status === 'caught') {
-      g.fillStyle(COLORS.watch, 1).fillCircle(TRACK_CX, PLAYER_Y, 11);
-      g.lineStyle(2, 0x000000, 0.35).strokeCircle(TRACK_CX, PLAYER_Y, 11);
-    } else {
-      drawTrail(g, TRACK_CX, PLAYER_Y, player.vel / MAX_SPEED, this.skins.trail, this.time.now);
-      drawRunner(g, TRACK_CX, PLAYER_Y, 11, this.skins.character);
-    }
-
-    this.drawGuardian(g, cur);
-    this.drawTimingBar(g, cur, releaseTicks);
-    this.drawSpeedBar(g, player.vel);
-
-    // Watch 중 화면 가장자리 경고
-    if (phase === 'watch') {
-      o.lineStyle(10, COLORS.watch, 0.55).strokeRect(0, 0, GAME_W, GAME_H);
-    }
-    if (this.mode === 'caught' || this.mode === 'out' || this.mode === 'cleared') {
-      o.fillStyle(0x000000, 0.55).fillRect(0, 0, GAME_W, GAME_H);
-    }
-    // 목숨
-    for (let i = 0; i < MAX_LIVES; i++) {
-      o.fillStyle(i < this.lives ? 0xfc8181 : 0x3a4150, 1).fillCircle(14 + i * 15, 66, 5);
-    }
-
-    // HUD
-    this.scoreText.setText(String(cur.score));
-    const mult = Math.min(5, 1 + Math.floor(cur.comboPoints / 4));
-    this.comboText.setText(mult > 1 ? `×${mult}` : '');
-    this.distText.setText(`${Math.min(trackM, playerM).toFixed(0)} / ${trackM.toFixed(0)} m`);
-    this.phaseText.setText(
-      t(this.lang, { chant: 'phase.run', turn: 'phase.turning', watch: 'phase.freeze', turnback: 'phase.run' }[phase] as MsgKey),
-    );
-    this.phaseText.setColor(phase === 'watch' ? '#fc8181' : phase === 'turn' ? '#ecc94b' : COLORS.dim);
-    this.rankText.setText(`#${rankOf(cur, PLAYER_ID)}/${cur.runners.length}\n${t(this.lang, 'hud.alive', { n: aliveCount(cur) })}`);
-    this.hintText.setVisible(!this.started && this.mode === 'play');
-    if (this.mode === 'play') this.tagText.setText('');
-    if (this.debugText) {
-      const g0 = cur.guardian;
-      this.debugText.setText(
-        `tick ${cur.tick}  ${g0.phase}#${g0.cycleIdx}\nvel ${toMps(player.vel).toFixed(2)} m/s  D=${g0.phaseStart + (g0.phase === 'turn' ? this.spec.turnTicks : 0) + SAFE_RELEASE_TICKS}\nassist +${this.spec.assistGraceTicks}t  turn ${this.spec.turnTicks}t  combo ${cur.comboPoints}`,
-      );
-    }
-  }
-
-  private drawFinish(g: Phaser.GameObjects.Graphics, y: number): void {
-    if (y < -20 || y > GAME_H + 20) return;
-    const cell = 12;
-    const w = TRACK_RIGHT - TRACK_LEFT;
-    for (let i = 0; i < w / cell; i++) {
-      for (let j = 0; j < 2; j++) {
-        g.fillStyle((i + j) % 2 === 0 ? 0xffffff : 0x222222, 1).fillRect(TRACK_LEFT + i * cell, y - 12 + j * cell, cell, cell);
-      }
-    }
-  }
-
-  /** 상단 술래: 등(chant) / 회전(turn) / 정면(watch) */
-  private drawGuardian(g: Phaser.GameObjects.Graphics, s: WorldState): void {
-    const cx = GAME_W / 2;
-    const cy = 64;
-    const { phase, phaseStart, cycleIdx } = s.guardian;
-    const color = phase === 'watch' ? COLORS.watch : phase === 'turn' ? COLORS.turn : phase === 'turnback' ? COLORS.turn : COLORS.chant;
-    const elapsed = s.tick - phaseStart;
-
-    // 박자 펄스 (소리 없이도 템포 인지) — chant 를 5박으로 분할
-    if (phase === 'chant') {
-      const dur = this.chantLen(cycleIdx);
-      const beat = Math.floor((elapsed * 5) / dur);
-      const frac = ((elapsed * 5) % dur) / dur;
-      g.lineStyle(3, COLORS.chant, 1 - frac).strokeCircle(cx, cy, 34 + frac * 22);
-      for (let i = 0; i < 5; i++) {
-        g.fillStyle(i <= beat ? COLORS.chant : 0x2d3640, 1).fillCircle(cx - 40 + i * 20, 108, 4);
-      }
-    }
-
-    g.fillStyle(color, 1).fillCircle(cx, cy, 34);
-    drawGuardianDeco(g, cx, cy, 34, this.skins.guardian);
-    // 얼굴: 등을 보이면 눈 없음, 회전 중 반눈, 정면이면 큰 눈
-    if (phase === 'watch') {
-      g.fillStyle(0xffffff, 1).fillCircle(cx - 12, cy - 4, 8).fillCircle(cx + 12, cy - 4, 8);
-      g.fillStyle(0x000000, 1).fillCircle(cx - 12, cy - 4, 4).fillCircle(cx + 12, cy - 4, 4);
-    } else if (phase === 'turn' || phase === 'turnback') {
-      const k = Math.min(1, elapsed / this.spec.turnTicks);
-      const open = phase === 'turn' ? k : 1 - k;
-      g.fillStyle(0xffffff, 1).fillEllipse(cx, cy - 4, 28 * open + 2, 12);
-    }
-  }
-
-  private chantLen(cycleIdx: number): number {
-    const arr = this.spec.chantTicks;
-    return arr[cycleIdx % arr.length] ?? 1;
-  }
-
-  /**
-   * 릴리즈 타이밍 바: D−18 tick ~ D+12 tick. D 까지 Good → Great → Perfect, 이후는 빨간 영역(탈락).
-   * 리플레이 중에는 플레이어가 실제로 손을 뗀 시점을 흰 삼각형으로 표시한다.
-   */
-  private drawTimingBar(g: Phaser.GameObjects.Graphics, s: WorldState, releaseTicks?: number[]): void {
-    const { phase, phaseStart } = s.guardian;
-    if (phase !== 'turn' && phase !== 'watch') return;
-    const ws = phase === 'turn' ? phaseStart + this.spec.turnTicks : phaseStart;
-    const d = ws + SAFE_RELEASE_TICKS;
-    const before = CC_GOOD_TICKS; // 18
-    const after = 12;
-    const span = before + after;
-    const startTick = d - before;
-    const x0 = 80;
-    const w = GAME_W - 160;
-    const y = 140;
-    const xOf = (tick: number): number => x0 + (Math.max(0, Math.min(span, tick - startTick)) / span) * w;
-    const zone = (fromTick: number, toTick: number, c: number, a = 0.9): void => {
-      g.fillStyle(c, a).fillRect(xOf(fromTick), y, xOf(toTick) - xOf(fromTick), 8);
-    };
-    zone(d - 18, d - 12, 0x2b6cb0); // good
-    zone(d - 12, d - 6, 0x2f855a); // great
-    zone(d - 6, d, 0xd69e2e); // perfect
-    const assist = this.spec.assistGraceTicks;
-    if (assist > 0) zone(d, d + assist, 0xd69e2e, 0.45); // Assist 로 허용되는 늦은 구간
-    zone(d + assist, d + after, COLORS.watch);
-    g.fillStyle(0xffffff, 0.8).fillRect(xOf(d + assist) - 1, y - 3, 2, 14); // 마감선
-    g.fillStyle(0xffffff, 1).fillRect(xOf(s.tick) - 1.5, y - 5, 3, 18);
-    if (releaseTicks) {
-      for (const t of releaseTicks) {
-        if (t < startTick || t > d + after) continue;
-        const px = xOf(t);
-        g.fillStyle(0xffffff, 1).fillTriangle(px - 5, y + 28, px + 5, y + 28, px, y + 16);
-      }
-    }
-  }
-
-  private drawSpeedBar(g: Phaser.GameObjects.Graphics, vel: number): void {
-    const x = 20;
-    const top = 200;
-    const h = 220;
-    g.fillStyle(0x2d3640, 1).fillRect(x, top, 10, h);
-    const fill = (vel / MAX_SPEED) * h;
-    g.fillStyle(COLORS.player, 1).fillRect(x, top + h - fill, 10, fill);
-    // 허용 속도 눈금
-    const tolY = top + h - (V_TOL / MAX_SPEED) * h;
-    g.lineStyle(2, COLORS.watch, 1).lineBetween(x - 4, tolY, x + 14, tolY);
-  }
 }

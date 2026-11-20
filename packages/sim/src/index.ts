@@ -1,10 +1,12 @@
 export * from './config';
 export * from './types';
 export { Rng, mixSeed } from './rng';
-export { makeStageSpec, defaultAssist, adjustAssist, ASSIST_CAP } from './stage';
-export type { StageOutcome } from './stage';
+export { makeStageSpec, defaultAssist, adjustAssist, ASSIST_CAP, canonicalSeed, CANONICAL_SEED_BASE } from './stage';
+export type { StageOutcome, StageOptions } from './stage';
 export { rankOf, aliveCount } from './rank';
-export { createWorld, step, isPlayerDone, gradeRelease, comboMultiplier, PLAYER_ID } from './world';
+export { createWorld, step, isPlayerDone, isHuman, gradeRelease, comboMultiplier, PLAYER_ID } from './world';
+export { RollbackWorld } from './rollback';
+export type { RollbackOptions } from './rollback';
 export { hashState } from './hash';
 export { getBotInputs } from './bots';
 export { guardianSchedule } from './guardian';

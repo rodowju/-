@@ -20,7 +20,7 @@ export const PAR_REFERENCE: ReferenceStyle = { lead: 8, reaction: 8 };
  * 완주하지 못하면 Infinity.
  */
 export function referenceFinishTicks(spec: StageSpec, style: ReferenceStyle): number {
-  const solo: StageSpec = { ...spec, botCount: 0, parTicks: 0 };
+  const solo: StageSpec = { ...spec, botCount: 0, humans: 1, parTicks: 0 };
   const sch = guardianSchedule(solo, CYCLE_COUNT);
   const inputs: InputEvent[] = [];
   sch.forEach((c, i) => {

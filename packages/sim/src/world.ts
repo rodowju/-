@@ -32,15 +32,14 @@ export const PLAYER_ID = 0;
 
 export function createWorld(spec: StageSpec): WorldState {
   const runners: RunnerState[] = [];
-  for (let i = 0; i <= spec.botCount; i++) {
-    runners.push({ id: i, pos: 0, vel: 0, holding: false, status: 'running', endTick: -1, place: 0, nextInput: 0 });
+  const total = spec.humans + spec.botCount;
+  for (let i = 0; i < total; i++) {
+    runners.push({ id: i, pos: 0, vel: 0, holding: false, status: 'running', endTick: -1, place: 0, nextInput: 0, combo: 0, score: 0 });
   }
   return {
     tick: 0,
     guardian: initialGuardian(),
     runners,
-    comboPoints: 0,
-    score: 0,
     finishedCount: 0,
     events: [],
   };
@@ -75,11 +74,16 @@ export function gradeRelease(
   return undefined;
 }
 
+/** 사람 러너인가 (외부 입력·Assist·점수 대상) */
+export function isHuman(spec: StageSpec, id: number): boolean {
+  return id < spec.humans;
+}
+
 /**
  * 한 tick 전진. 순수 함수: 입력 state는 변경하지 않는다.
- * @param playerInputs 이 tick(state.tick)에 발생한 플레이어 입력
+ * @param humanInputs 이 tick(state.tick)에 발생한 사람 플레이어 입력 (runner 생략 시 0번)
  */
-export function step(state: WorldState, spec: StageSpec, playerInputs: readonly InputEvent[]): WorldState {
+export function step(state: WorldState, spec: StageSpec, humanInputs: readonly InputEvent[]): WorldState {
   const tick = state.tick;
   const events: SimEvent[] = [];
 
@@ -90,8 +94,6 @@ export function step(state: WorldState, spec: StageSpec, playerInputs: readonly 
     events.push({ type: 'phase', tick, phase: tr.phase, cycleIdx: tr.cycleIdx });
   }
 
-  let comboPoints = state.comboPoints;
-  let score = state.score;
   let finishedCount = state.finishedCount;
   const botInputs = getBotInputs(spec);
 
@@ -103,13 +105,16 @@ export function step(state: WorldState, spec: StageSpec, playerInputs: readonly 
     let endTick = r.endTick;
     let place = r.place;
     let pos = r.pos;
+    let combo = r.combo;
+    let score = r.score;
+    const human = isHuman(spec, r.id);
 
     // 2. 입력 적용
     const pending: InputEvent[] = [];
-    if (r.id === PLAYER_ID) {
-      for (const ev of playerInputs) if (ev.tick === tick) pending.push(ev);
+    if (human) {
+      for (const ev of humanInputs) if (ev.tick === tick && (ev.runner ?? PLAYER_ID) === r.id) pending.push(ev);
     } else {
-      const list = botInputs[r.id - 1] ?? [];
+      const list = botInputs[r.id - spec.humans] ?? [];
       while (nextInput < list.length && (list[nextInput]?.tick ?? Infinity) <= tick) {
         const ev = list[nextInput];
         if (ev && ev.tick === tick) pending.push(ev);
@@ -125,11 +130,11 @@ export function step(state: WorldState, spec: StageSpec, playerInputs: readonly 
         // 'up'
         const wasMoving = holding && vel > 0;
         holding = false;
-        if (r.id === PLAYER_ID && wasMoving) {
+        if (human && wasMoving) {
           const grade = gradeRelease(guardian, tick, spec.assistGraceTicks, spec.turnTicks);
           if (grade) {
-            const mult = comboMultiplier(comboPoints);
-            comboPoints += COMBO_POINTS[grade];
+            const mult = comboMultiplier(combo);
+            combo += COMBO_POINTS[grade];
             const pts = CLOSE_CALL_BASE_SCORE[grade] * mult;
             score += pts;
             events.push({ type: 'closeCall', tick, runner: r.id, grade, points: pts, multiplier: mult });
@@ -144,14 +149,14 @@ export function step(state: WorldState, spec: StageSpec, playerInputs: readonly 
       pos += vel;
 
       // 4. 판정
-      const grace = GRACE_TICKS + (r.id === PLAYER_ID ? spec.assistGraceTicks : 0);
+      const grace = GRACE_TICKS + (human ? spec.assistGraceTicks : 0);
       if (guardian.phase === 'watch' && tick >= guardian.phaseStart + grace && vel > V_TOL) {
         status = 'caught';
         endTick = tick;
         events.push({ type: 'caught', tick, runner: r.id, speed: vel });
         vel = 0;
         holding = false;
-        if (r.id === PLAYER_ID) comboPoints = 0;
+        if (human) combo = 0;
       } else if (pos >= spec.trackLength) {
         // 5. 도착
         status = 'finished';
@@ -162,21 +167,21 @@ export function step(state: WorldState, spec: StageSpec, playerInputs: readonly 
         finishedCount += 1;
         place = finishedCount;
         events.push({ type: 'finished', tick, runner: r.id, place });
-        if (r.id === PLAYER_ID) {
+        if (human) {
           const bonus = Math.floor(Math.max(0, spec.parTicks - tick) / 6) * TIME_BONUS_PER_6_TICKS;
           score += CLEAR_SCORE + bonus;
         }
       }
     }
 
-    return { id: r.id, pos, vel, holding, status, endTick, place, nextInput };
+    return { id: r.id, pos, vel, holding, status, endTick, place, nextInput, combo, score };
   });
 
-  return { tick: tick + 1, guardian, runners, comboPoints, score, finishedCount, events };
+  return { tick: tick + 1, guardian, runners, finishedCount, events };
 }
 
-/** 플레이어의 런이 끝났는가 (탈락 또는 도착) */
-export function isPlayerDone(state: WorldState): boolean {
-  const p = state.runners[PLAYER_ID];
+/** 러너의 런이 끝났는가 (탈락 또는 도착). 기본은 플레이어(0). */
+export function isPlayerDone(state: WorldState, id: number = PLAYER_ID): boolean {
+  const p = state.runners[id];
   return !p || p.status !== 'running';
 }

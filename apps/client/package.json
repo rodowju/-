@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@freeze/net": "workspace:*",
     "@freeze/sim": "workspace:*",
     "phaser": "^3.88.0"
   },

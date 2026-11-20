@@ -16,6 +16,9 @@ export type EventName =
   | 'purchase'
   | 'equip'
   | 'perf'
+  | 'match_start'
+  | 'match_end'
+  | 'ghost'
   | 'error';
 
 export type Prop = string | number | boolean;
@@ -34,6 +37,9 @@ export const SCHEMA: Readonly<Record<EventName, readonly string[]>> = {
   purchase: ['skin', 'price'],
   equip: ['skin'],
   perf: ['stage', 'frames', 'p50', 'p95', 'max'],
+  match_start: ['stage', 'humans', 'rttMs'],
+  match_end: ['stage', 'humans', 'place', 'status', 'late', 'desyncs', 'resyncs', 'rttMs', 'verified'],
+  ghost: ['stage', 'action', 'diffMs', 'rank'],
   error: ['msg', 'src'],
 };
 

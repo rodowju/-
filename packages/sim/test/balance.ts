@@ -85,7 +85,7 @@ export function attempt(stage: number, seed: number, skill: Skill, assist?: numb
       ptr++;
     }
     s = step(s, spec, now);
-    maxMult = Math.max(maxMult, comboMultiplier(s.comboPoints));
+    maxMult = Math.max(maxMult, comboMultiplier(s.runners[0]!.combo));
   }
   const p = s.runners[0];
   const cleared = p?.status === 'finished';

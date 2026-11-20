@@ -25,8 +25,6 @@ export function hashState(s: WorldState): number {
   mix(PHASE_CODE[s.guardian.phase]);
   mix(s.guardian.phaseStart);
   mix(s.guardian.cycleIdx);
-  mix(s.comboPoints);
-  mix(s.score);
   mix(s.finishedCount);
   for (const r of s.runners) {
     mix(r.id);
@@ -37,6 +35,8 @@ export function hashState(s: WorldState): number {
     mix(r.endTick);
     mix(r.place);
     mix(r.nextInput);
+    mix(r.combo);
+    mix(r.score);
   }
   return h >>> 0;
 }

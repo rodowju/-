@@ -47,7 +47,7 @@ describe('결정론', () => {
   it('골든 해시: 규칙이 바뀌면 의도적으로 갱신해야 한다', () => {
     const spec = makeStageSpec(12, 20260101);
     const r = runReplay(makeReplay(spec, scriptedInputs(spec, 5)), { untilTick: 1200 });
-    expect(hashState(r.final)).toMatchInlineSnapshot(`2123773010`);
+    expect(hashState(r.final)).toMatchInlineSnapshot(`4145851322`);
   });
 });
 

@@ -30,10 +30,12 @@ export function analyzeCatch(
   inputs: readonly InputEvent[],
   catchTick: number,
   watchStart: number,
+  runner = 0,
 ): CatchAnalysis {
   const deadline = watchStart + SAFE_RELEASE_TICKS + spec.assistGraceTicks;
   let last: InputEvent | undefined;
   for (const ev of inputs) {
+    if ((ev.runner ?? 0) !== runner) continue;
     if (ev.tick <= catchTick && (!last || ev.tick >= last.tick)) last = ev;
   }
   if (!last || (last.type === 'down' && last.tick < watchStart)) {
