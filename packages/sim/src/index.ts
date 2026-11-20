@@ -1,12 +1,15 @@
 export * from './config';
 export * from './types';
 export { Rng, mixSeed } from './rng';
-export { makeStageSpec } from './stage';
+export { makeStageSpec, defaultAssist, adjustAssist, ASSIST_CAP } from './stage';
+export type { StageOutcome } from './stage';
+export { rankOf, aliveCount } from './rank';
 export { createWorld, step, isPlayerDone, gradeRelease, comboMultiplier, PLAYER_ID } from './world';
 export { hashState } from './hash';
 export { getBotInputs } from './bots';
 export { guardianSchedule } from './guardian';
 export { makeReplay, serializeReplay, parseReplay, runReplay, resimulate, SnapshotBuffer } from './replay';
-export { analyzeCatch, starsFor } from './analysis';
+export { analyzeCatch, starsFor, comboTargetFor } from './analysis';
 export type { CatchAnalysis, CatchKind } from './analysis';
 export type { ReplayData, RunOptions, RunResult } from './replay';
+export { idealFinishTicks, referenceFinishTicks, PAR_REFERENCE, IDEAL } from './ideal';

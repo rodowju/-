@@ -21,6 +21,8 @@ export interface StageSpec {
   readonly assistGraceTicks: number;
   /** 시간 보너스 기준(tick) */
   readonly parTicks: number;
+  /** 술래 회전(경고) 길이(tick). 짧을수록 반응 시간이 줄어 어렵다. */
+  readonly turnTicks: number;
 }
 
 export interface GuardianState {

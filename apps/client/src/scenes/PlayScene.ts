@@ -3,6 +3,8 @@ import {
   CC_GOOD_TICKS,
   MAX_SPEED,
   SnapshotBuffer,
+  adjustAssist,
+  aliveCount,
   analyzeCatch,
   comboMultiplier,
   hashState,
@@ -12,11 +14,11 @@ import {
   PLAYER_ID,
   SAFE_RELEASE_TICKS,
   TICK_HZ,
-  TURN_TICKS,
   V_TOL,
   createWorld,
   isPlayerDone,
   makeStageSpec,
+  rankOf,
   step,
   type InputEvent,
   type SimEvent,
@@ -24,7 +26,7 @@ import {
   type WorldState,
 } from '@freeze/sim';
 import { COLORS, GAME_H, GAME_W, PLAYER_Y, PPM, TRACK_CX, TRACK_LEFT, TRACK_RIGHT } from '../layout';
-import { bestStars, saveStars } from '../services/storage';
+import { bestStars, loadAssist, nextStage, saveAssist, saveStars } from '../services/storage';
 
 const STEP_MS = 1000 / TICK_HZ;
 const UM_PER_M = 1_000_000;
@@ -47,6 +49,7 @@ const REPLAY_HOLD_MS = 700;
 interface SceneData {
   stage?: number;
   lives?: number;
+  deaths?: number;
 }
 
 interface ReplayPlayback {
@@ -73,6 +76,7 @@ export class PlayScene extends Phaser.Scene {
   private lastCaughtSpeed = 0;
   private lastCatchTick = 0;
   private lives = MAX_LIVES;
+  private deaths = 0;
   private maxMult = 1;
   private snapBuf!: SnapshotBuffer;
   private initialWorld!: WorldState;
@@ -89,6 +93,7 @@ export class PlayScene extends Phaser.Scene {
   private bigText!: Phaser.GameObjects.Text;
   private subText!: Phaser.GameObjects.Text;
   private tagText!: Phaser.GameObjects.Text;
+  private rankText!: Phaser.GameObjects.Text;
   private debugText?: Phaser.GameObjects.Text;
 
   constructor() {
@@ -96,12 +101,14 @@ export class PlayScene extends Phaser.Scene {
   }
 
   init(data: SceneData): void {
-    this.stage = data.stage ?? Math.max(1, Number(params.get('stage') ?? 1) | 0);
+    const urlStage = params.get('stage');
+    this.stage = data.stage ?? (urlStage ? Math.max(1, Number(urlStage) | 0) : nextStage());
     this.lives = data.lives ?? MAX_LIVES;
+    this.deaths = data.deaths ?? 0;
   }
 
   create(): void {
-    this.spec = makeStageSpec(this.stage, BASE_SEED + this.stage * 7919);
+    this.spec = makeStageSpec(this.stage, BASE_SEED + this.stage * 7919, loadAssist());
     this.world = createWorld(this.spec);
     this.prev = this.world;
     this.initialWorld = this.world;
@@ -129,6 +136,10 @@ export class PlayScene extends Phaser.Scene {
       .setDepth(25);
     this.comboText = this.add
       .text(GAME_W - 12, 10, '', { ...mono, fontSize: '22px', color: COLORS.perfect })
+      .setOrigin(1, 0)
+      .setDepth(10);
+    this.rankText = this.add
+      .text(GAME_W - 6, 52, '', { ...mono, fontSize: '11px', color: COLORS.dim, align: 'right' })
       .setOrigin(1, 0)
       .setDepth(10);
     this.phaseText = this.add
@@ -169,6 +180,7 @@ export class PlayScene extends Phaser.Scene {
       inputLog: () => this.inputLog,
       mode: () => this.mode,
       lives: () => this.lives,
+      deaths: () => this.deaths,
       replay: () => (this.replay ? { pos: this.replay.pos, n: this.replay.states.length, analysis: this.replay.analysis } : null),
     };
   }
@@ -177,9 +189,23 @@ export class PlayScene extends Phaser.Scene {
   private bindInput(): void {
     const down = (): void => this.onPress();
     const up = (): void => this.onRelease();
-    this.input.on('pointerdown', down);
-    this.input.on('pointerup', up);
-    this.input.on('pointerupoutside', up);
+    // 입력은 캔버스가 아니라 문서 전체에서 받는다: FIT 스케일의 레터박스(상하/좌우 여백)를 눌러도 동작해야 한다.
+    const onPointerDown = (e: PointerEvent): void => {
+      if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      down();
+    };
+    const onPointerUp = (e: PointerEvent): void => {
+      if (!e.isPrimary) return;
+      up();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('pointerup', onPointerUp);
+    document.addEventListener('pointercancel', onPointerUp);
+    this.events.once('shutdown', () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('pointerup', onPointerUp);
+      document.removeEventListener('pointercancel', onPointerUp);
+    });
     this.input.keyboard?.on('keydown-SPACE', (e: KeyboardEvent) => {
       if (!e.repeat) down();
     });
@@ -201,9 +227,9 @@ export class PlayScene extends Phaser.Scene {
     if (this.mode !== 'play') {
       // 결과 화면: 입력 잠금(실수 탭 방지) 후 다음으로
       if (this.time.now - this.modeSince < 500) return;
-      if (this.mode === 'cleared') this.scene.restart({ stage: this.stage + 1, lives: MAX_LIVES });
-      else if (this.mode === 'out') this.scene.restart({ stage: this.stage, lives: MAX_LIVES });
-      else this.scene.restart({ stage: this.stage, lives: this.lives });
+      if (this.mode === 'cleared') this.scene.restart({ stage: this.stage + 1, lives: MAX_LIVES, deaths: 0 });
+      else if (this.mode === 'out') this.scene.restart({ stage: this.stage, lives: MAX_LIVES, deaths: 0 });
+      else this.scene.restart({ stage: this.stage, lives: this.lives, deaths: this.deaths });
       return;
     }
     if (this.holding) return;
@@ -309,6 +335,8 @@ export class PlayScene extends Phaser.Scene {
       const stars = starsFor(this.spec, p.endTick, this.maxMult);
       const best = bestStars(this.stage);
       const isNew = saveStars(this.stage, stars);
+      // 동적 Assist: 무사고면 줄이고, 고전하면 늘린다 (유저에게는 알리지 않는다)
+      saveAssist(adjustAssist(this.spec.assistGraceTicks, { cleared: true, deaths: this.deaths }));
       const star = (n: number): string => '★'.repeat(n) + '☆'.repeat(3 - n);
       this.bigText.setText('CLEAR').setColor('#f6e05e');
       this.subText.setText(
@@ -330,11 +358,13 @@ export class PlayScene extends Phaser.Scene {
       console.error('replay desync: resimulated state differs from live state');
       this.replay = undefined;
       this.lives -= 1;
+      this.deaths += 1;
       this.showResult(analyzeCatch(this.spec, this.inputLog, catchTick, this.world.guardian.phaseStart));
       return;
     }
     const analysis = analyzeCatch(this.spec, this.inputLog, catchTick, this.world.guardian.phaseStart);
     this.lives -= 1;
+    this.deaths += 1;
     this.replay = {
       states,
       pos: 0,
@@ -351,6 +381,7 @@ export class PlayScene extends Phaser.Scene {
     this.tagText.setText('');
     this.modeSince = this.time.now;
     this.mode = this.lives > 0 ? 'caught' : 'out';
+    if (this.mode === 'out') saveAssist(adjustAssist(this.spec.assistGraceTicks, { cleared: false, deaths: this.deaths }));
     const mps = toMps(this.lastCaughtSpeed);
     let why = '';
     if (a?.kind === 'late-release') {
@@ -445,12 +476,13 @@ export class PlayScene extends Phaser.Scene {
       { chant: 'RUN', turn: 'TURNING…', watch: 'FREEZE!', turnback: 'RUN' }[phase],
     );
     this.phaseText.setColor(phase === 'watch' ? '#fc8181' : phase === 'turn' ? '#ecc94b' : COLORS.dim);
+    this.rankText.setText(`#${rankOf(cur, PLAYER_ID)}/${cur.runners.length}\n${aliveCount(cur)} alive`);
     this.hintText.setVisible(!this.started && this.mode === 'play');
     if (this.mode === 'play') this.tagText.setText('');
     if (this.debugText) {
       const g0 = cur.guardian;
       this.debugText.setText(
-        `tick ${cur.tick}  ${g0.phase}#${g0.cycleIdx}\nvel ${toMps(player.vel).toFixed(2)} m/s  D=${g0.phaseStart + (g0.phase === 'turn' ? TURN_TICKS : 0) + SAFE_RELEASE_TICKS}\nassist +${this.spec.assistGraceTicks}t  combo ${cur.comboPoints}`,
+        `tick ${cur.tick}  ${g0.phase}#${g0.cycleIdx}\nvel ${toMps(player.vel).toFixed(2)} m/s  D=${g0.phaseStart + (g0.phase === 'turn' ? this.spec.turnTicks : 0) + SAFE_RELEASE_TICKS}\nassist +${this.spec.assistGraceTicks}t  turn ${this.spec.turnTicks}t  combo ${cur.comboPoints}`,
       );
     }
   }
@@ -491,7 +523,7 @@ export class PlayScene extends Phaser.Scene {
       g.fillStyle(0xffffff, 1).fillCircle(cx - 12, cy - 4, 8).fillCircle(cx + 12, cy - 4, 8);
       g.fillStyle(0x000000, 1).fillCircle(cx - 12, cy - 4, 4).fillCircle(cx + 12, cy - 4, 4);
     } else if (phase === 'turn' || phase === 'turnback') {
-      const k = Math.min(1, elapsed / TURN_TICKS);
+      const k = Math.min(1, elapsed / this.spec.turnTicks);
       const open = phase === 'turn' ? k : 1 - k;
       g.fillStyle(0xffffff, 1).fillEllipse(cx, cy - 4, 28 * open + 2, 12);
     }
@@ -509,7 +541,7 @@ export class PlayScene extends Phaser.Scene {
   private drawTimingBar(g: Phaser.GameObjects.Graphics, s: WorldState, releaseTicks?: number[]): void {
     const { phase, phaseStart } = s.guardian;
     if (phase !== 'turn' && phase !== 'watch') return;
-    const ws = phase === 'turn' ? phaseStart + TURN_TICKS : phaseStart;
+    const ws = phase === 'turn' ? phaseStart + this.spec.turnTicks : phaseStart;
     const d = ws + SAFE_RELEASE_TICKS;
     const before = CC_GOOD_TICKS; // 18
     const after = 12;

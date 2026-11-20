@@ -105,17 +105,17 @@ describe('Close Call 등급', () => {
   };
 
   it('D−6 이내는 Perfect', () => {
-    expect(gradeRelease(g(D), D, 0)).toBe('perfect');
-    expect(gradeRelease(g(D - 6), D - 6, 0)).toBe('perfect');
+    expect(gradeRelease(g(D), D, 0, spec.turnTicks)).toBe('perfect');
+    expect(gradeRelease(g(D - 6), D - 6, 0, spec.turnTicks)).toBe('perfect');
   });
   it('D−7 ~ D−12 는 Great, D−13 ~ D−18 는 Good', () => {
-    expect(gradeRelease(g(D - 7), D - 7, 0)).toBe('great');
-    expect(gradeRelease(g(D - 12), D - 12, 0)).toBe('great');
-    expect(gradeRelease(g(D - 13), D - 13, 0)).toBe('good');
-    expect(gradeRelease(g(D - 18), D - 18, 0)).toBe('good');
+    expect(gradeRelease(g(D - 7), D - 7, 0, spec.turnTicks)).toBe('great');
+    expect(gradeRelease(g(D - 12), D - 12, 0, spec.turnTicks)).toBe('great');
+    expect(gradeRelease(g(D - 13), D - 13, 0, spec.turnTicks)).toBe('good');
+    expect(gradeRelease(g(D - 18), D - 18, 0, spec.turnTicks)).toBe('good');
   });
   it('Chant 중 릴리즈는 등급 없음', () => {
-    expect(gradeRelease(g(50), 50, 0)).toBeUndefined();
+    expect(gradeRelease(g(50), 50, 0, spec.turnTicks)).toBeUndefined();
   });
   it('이벤트·점수·콤보 반영 및 탈락 시 콤보 리셋', () => {
     // 첫 사이클 Perfect, 두 번째 사이클은 늦게 풀어 탈락

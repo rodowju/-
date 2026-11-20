@@ -4,6 +4,8 @@ const KEY = 'freeze.progress.v1';
 interface Progress {
   /** stage → 최고 별 개수 */
   stars: Record<string, number>;
+  /** 동적 Assist(tick). 미설정이면 스테이지 기본값을 쓴다. */
+  assist?: number;
 }
 
 function load(): Progress {
@@ -21,6 +23,27 @@ function load(): Progress {
 
 export function bestStars(stage: number): number {
   return load().stars[String(stage)] ?? 0;
+}
+
+/** 다음에 플레이할 스테이지: 클리어한 최대 스테이지 + 1 (기록 없으면 1) */
+export function nextStage(): number {
+  const cleared = Object.keys(load().stars).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  return cleared.length ? Math.max(...cleared) + 1 : 1;
+}
+
+export function loadAssist(): number | undefined {
+  const a = load().assist;
+  return typeof a === 'number' && Number.isFinite(a) ? a : undefined;
+}
+
+export function saveAssist(assist: number): void {
+  const p = load();
+  p.assist = assist;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(p));
+  } catch {
+    /* 무시 */
+  }
 }
 
 /** 갱신되었으면 true */

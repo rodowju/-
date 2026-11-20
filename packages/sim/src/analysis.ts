@@ -51,10 +51,18 @@ export function analyzeCatch(
   };
 }
 
-/** 별 개수 (GDD §4.5): 1 클리어, 2 시간(par 이내), 3 콤보 배율 3 이상 (콤보 기준은 가설값) */
+/**
+ * ★3 에 필요한 콤보 배율. 사이클 수가 적은 초반은 낮게, 후반은 높게 (가설값).
+ */
+export function comboTargetFor(stage: number): number {
+  if (stage <= 3) return 2;
+  if (stage <= 10) return 3;
+  if (stage <= 20) return 4;
+  return 5;
+}
+
+/** 별 개수 (GDD §4.5): 1 클리어, 2 시간(par 이내), 3 par 이내 + 목표 콤보 배율 달성 */
 export function starsFor(spec: StageSpec, finishTick: number, maxMultiplier: number): 1 | 2 | 3 {
-  let stars: 1 | 2 | 3 = 1;
-  if (finishTick <= spec.parTicks) stars = 2;
-  if (finishTick <= spec.parTicks && maxMultiplier >= 3) stars = 3;
-  return stars;
+  if (finishTick > spec.parTicks) return 1;
+  return maxMultiplier >= comboTargetFor(spec.stage) ? 3 : 2;
 }

@@ -1,4 +1,3 @@
-import { TURN_TICKS } from './config';
 import type { GuardianPhase, GuardianState, StageSpec } from './types';
 
 const NEXT: Record<GuardianPhase, GuardianPhase> = {
@@ -22,7 +21,7 @@ export function phaseDuration(spec: StageSpec, phase: GuardianPhase, cycleIdx: n
       return at(spec.watchTicks, cycleIdx);
     case 'turn':
     case 'turnback':
-      return TURN_TICKS;
+      return spec.turnTicks;
   }
 }
 
@@ -68,9 +67,9 @@ export function guardianSchedule(spec: StageSpec, cycles: number): CycleSchedule
   for (let i = 0; i < cycles; i++) {
     const chantStart = t;
     const turnStart = chantStart + phaseDuration(spec, 'chant', i);
-    const watchStart = turnStart + TURN_TICKS;
+    const watchStart = turnStart + spec.turnTicks;
     const turnbackStart = watchStart + phaseDuration(spec, 'watch', i);
-    const end = turnbackStart + TURN_TICKS;
+    const end = turnbackStart + spec.turnTicks;
     out.push({ chantStart, turnStart, watchStart, turnbackStart, end });
     t = end;
   }

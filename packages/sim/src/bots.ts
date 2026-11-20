@@ -1,4 +1,4 @@
-import { CYCLE_COUNT, SAFE_RELEASE_TICKS, TURN_TICKS, msToTicks } from './config';
+import { CYCLE_COUNT, SAFE_RELEASE_TICKS, msToTicks } from './config';
 import { guardianSchedule } from './guardian';
 import { Rng, mixSeed } from './rng';
 import type { InputEvent, StageSpec } from './types';
@@ -26,7 +26,7 @@ export function getBotInputs(spec: StageSpec): readonly (readonly InputEvent[])[
       const mistake = rng.chance(spec.botMistakePermille);
       const upAt = mistake
         ? cur.watchStart + SAFE_RELEASE_TICKS + 1 + rng.int(6) // 늦은 릴리즈 → 탈락
-        : cur.watchStart + SAFE_RELEASE_TICKS - rng.int(TURN_TICKS + 1);
+        : cur.watchStart + SAFE_RELEASE_TICKS - rng.int(spec.turnTicks + 1);
       inputs.push({ tick: downAt, type: 'down' });
       inputs.push({ tick: upAt, type: 'up' });
     }

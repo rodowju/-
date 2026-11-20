@@ -51,15 +51,20 @@ export function comboMultiplier(points: number): number {
 }
 
 /** Watch 시작 tick (현재 phase가 turn 또는 watch일 때만 의미 있음) */
-function watchStartOf(g: GuardianState): number | undefined {
-  if (g.phase === 'turn') return g.phaseStart + TURN_TICKS;
+function watchStartOf(g: GuardianState, turnTicks: number): number | undefined {
+  if (g.phase === 'turn') return g.phaseStart + turnTicks;
   if (g.phase === 'watch') return g.phaseStart;
   return undefined;
 }
 
 /** 릴리즈 시점의 Close Call 등급. 해당 없으면 undefined. (GDD §4.4) */
-export function gradeRelease(g: GuardianState, tick: number, assist: number): CloseCallGrade | undefined {
-  const ws = watchStartOf(g);
+export function gradeRelease(
+  g: GuardianState,
+  tick: number,
+  assist: number,
+  turnTicks: number = TURN_TICKS,
+): CloseCallGrade | undefined {
+  const ws = watchStartOf(g, turnTicks);
   if (ws === undefined) return undefined;
   const d = ws + SAFE_RELEASE_TICKS;
   const delta = d - tick; // 양수: D보다 얼마나 이른가
@@ -121,7 +126,7 @@ export function step(state: WorldState, spec: StageSpec, playerInputs: readonly 
         const wasMoving = holding && vel > 0;
         holding = false;
         if (r.id === PLAYER_ID && wasMoving) {
-          const grade = gradeRelease(guardian, tick, spec.assistGraceTicks);
+          const grade = gradeRelease(guardian, tick, spec.assistGraceTicks, spec.turnTicks);
           if (grade) {
             const mult = comboMultiplier(comboPoints);
             comboPoints += COMBO_POINTS[grade];
