@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"(client: no unit tests yet)\""
+    "test": "vitest run"
   },
   "dependencies": {
     "@freeze/sim": "workspace:*",

@@ -26,7 +26,13 @@ import {
   type WorldState,
 } from '@freeze/sim';
 import { COLORS, GAME_H, GAME_W, PLAYER_Y, PPM, TRACK_CX, TRACK_LEFT, TRACK_RIGHT } from '../layout';
-import { bestStars, loadAssist, nextStage, saveAssist, saveStars } from '../services/storage';
+import { addCoins, applyClear, nextStageOf } from '../logic/progress';
+import { shouldShowInterstitial } from '../logic/adPolicy';
+import { t, type MsgKey } from '../logic/i18n';
+import { DEFAULT_EQUIPPED, skinById, type Skin, type SkinCategory } from '../logic/skins';
+import { drawGuardianDeco, drawRunner, drawTrail, spawnStopFx } from '../render/skinDraw';
+import { ads } from '../services/ads';
+import { getLang, getProgress, saveProgress } from '../services/storage';
 
 const STEP_MS = 1000 / TICK_HZ;
 const UM_PER_M = 1_000_000;
@@ -50,6 +56,18 @@ interface SceneData {
   stage?: number;
   lives?: number;
   deaths?: number;
+  /** 이 스테이지에서 광고 이어하기를 이미 썼는가 */
+  revived?: boolean;
+}
+
+interface Btn {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rect: Phaser.GameObjects.Rectangle;
+  txt: Phaser.GameObjects.Text;
+  onClick: () => void;
 }
 
 interface ReplayPlayback {
@@ -81,6 +99,16 @@ export class PlayScene extends Phaser.Scene {
   private snapBuf!: SnapshotBuffer;
   private initialWorld!: WorldState;
   private replay?: ReplayPlayback;
+  private lang = getLang();
+  private revived = false;
+  private busy = false;
+  private coinsGained = 0;
+  private doubled = false;
+  private unlockedSkinName = '';
+  private newBestStars = false;
+  private resultStars = 1;
+  private btns: Btn[] = [];
+  private skins!: Record<SkinCategory, Skin>;
 
   private gfx!: Phaser.GameObjects.Graphics;
   private overlay!: Phaser.GameObjects.Graphics;
@@ -102,13 +130,23 @@ export class PlayScene extends Phaser.Scene {
 
   init(data: SceneData): void {
     const urlStage = params.get('stage');
-    this.stage = data.stage ?? (urlStage ? Math.max(1, Number(urlStage) | 0) : nextStage());
+    this.stage = data.stage ?? (urlStage ? Math.max(1, Number(urlStage) | 0) : nextStageOf(getProgress()));
+    this.revived = data.revived ?? false;
+    this.busy = false;
+    this.btns = [];
     this.lives = data.lives ?? MAX_LIVES;
     this.deaths = data.deaths ?? 0;
   }
 
   create(): void {
-    this.spec = makeStageSpec(this.stage, BASE_SEED + this.stage * 7919, loadAssist());
+    this.lang = getLang();
+    const eq = getProgress().equipped;
+    const pick = (c: SkinCategory): Skin =>
+      skinById(eq[c]) ?? (skinById(DEFAULT_EQUIPPED[c]) as Skin);
+    this.skins = { character: pick('character'), trail: pick('trail'), stopfx: pick('stopfx'), guardian: pick('guardian') };
+    this.coinsGained = 0;
+    this.doubled = false;
+    this.spec = makeStageSpec(this.stage, BASE_SEED + this.stage * 7919, getProgress().assist);
     this.world = createWorld(this.spec);
     this.prev = this.world;
     this.initialWorld = this.world;
@@ -128,7 +166,7 @@ export class PlayScene extends Phaser.Scene {
     const mono = { fontFamily: 'system-ui, sans-serif' };
     this.scoreText = this.add.text(12, 10, '0', { ...mono, fontSize: '22px', color: COLORS.text }).setDepth(10);
     this.stageText = this.add
-      .text(8, 38, `STAGE ${this.stage}`, { ...mono, fontSize: '11px', color: COLORS.dim })
+      .text(8, 38, t(this.lang, 'hud.stage', { n: this.stage }), { ...mono, fontSize: '11px', color: COLORS.dim })
       .setDepth(10);
     this.tagText = this.add
       .text(GAME_W / 2, GAME_H - 40, '', { ...mono, fontSize: '16px', color: '#f6e05e', fontStyle: 'bold' })
@@ -151,7 +189,7 @@ export class PlayScene extends Phaser.Scene {
       .setOrigin(1, 0)
       .setDepth(10);
     this.hintText = this.add
-      .text(GAME_W / 2, GAME_H - 70, 'HOLD  to run\nRELEASE  to stop', {
+      .text(GAME_W / 2, GAME_H - 70, `${t(this.lang, 'hint.hold')}\n${t(this.lang, 'hint.release')}`, {
         ...mono,
         fontSize: '18px',
         color: COLORS.text,
@@ -180,6 +218,10 @@ export class PlayScene extends Phaser.Scene {
       inputLog: () => this.inputLog,
       mode: () => this.mode,
       lives: () => this.lives,
+      buttons: () => this.btns.map((b) => b.txt.text),
+      press: (i: number) => this.btns[i]?.onClick(),
+      progress: () => getProgress(),
+      lang: () => this.lang,
       deaths: () => this.deaths,
       replay: () => (this.replay ? { pos: this.replay.pos, n: this.replay.states.length, analysis: this.replay.analysis } : null),
     };
@@ -192,6 +234,13 @@ export class PlayScene extends Phaser.Scene {
     // 입력은 캔버스가 아니라 문서 전체에서 받는다: FIT 스케일의 레터박스(상하/좌우 여백)를 눌러도 동작해야 한다.
     const onPointerDown = (e: PointerEvent): void => {
       if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      if (this.mode !== 'play' && this.mode !== 'replay') {
+        const b = this.hitButton(e);
+        if (b) {
+          if (this.canAct()) b.onClick();
+          return;
+        }
+      }
       down();
     };
     const onPointerUp = (e: PointerEvent): void => {
@@ -226,16 +275,98 @@ export class PlayScene extends Phaser.Scene {
     }
     if (this.mode !== 'play') {
       // 결과 화면: 입력 잠금(실수 탭 방지) 후 다음으로
-      if (this.time.now - this.modeSince < 500) return;
-      if (this.mode === 'cleared') this.scene.restart({ stage: this.stage + 1, lives: MAX_LIVES, deaths: 0 });
-      else if (this.mode === 'out') this.scene.restart({ stage: this.stage, lives: MAX_LIVES, deaths: 0 });
-      else this.scene.restart({ stage: this.stage, lives: this.lives, deaths: this.deaths });
+      if (this.canAct(500)) void this.proceed();
       return;
     }
     if (this.holding) return;
     this.holding = true;
     this.started = true;
     this.queue({ tick: this.world.tick, type: 'down' });
+  }
+
+  private canAct(lockMs = 350): boolean {
+    return !this.busy && this.time.now - this.modeSince >= lockMs;
+  }
+
+  /** 결과 화면에서 다음 단계로: 클리어 시 전면 광고 정책을 확인한다 (플레이 중에는 호출되지 않는다). */
+  private async proceed(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      if (this.mode === 'cleared') {
+        const p = getProgress();
+        const now = Date.now();
+        if (shouldShowInterstitial({ sessions: p.sessions, highestStage: p.highestStage, lastInterstitialAt: p.lastInterstitialAt, now })) {
+          await ads.showInterstitial();
+          saveProgress({ ...getProgress(), lastInterstitialAt: Date.now() });
+        }
+      }
+      this.scene.restart(this.nextSceneData());
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** 결과 화면에서 이어질 플레이 씬 데이터 */
+  private nextSceneData(): SceneData {
+    if (this.mode === 'cleared') return { stage: this.stage + 1, lives: MAX_LIVES, deaths: 0 };
+    if (this.mode === 'out') return { stage: this.stage, lives: MAX_LIVES, deaths: 0 };
+    return { stage: this.stage, lives: this.lives, deaths: this.deaths, revived: this.revived };
+  }
+
+  private async watchRevive(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    const ok = await ads.showRewarded();
+    this.busy = false;
+    if (ok) this.scene.restart({ stage: this.stage, lives: 1, deaths: this.deaths, revived: true });
+  }
+
+  private async watchDouble(): Promise<void> {
+    if (this.busy || this.doubled) return;
+    this.busy = true;
+    const ok = await ads.showRewarded();
+    this.busy = false;
+    if (!ok) return;
+    saveProgress(addCoins(getProgress(), this.coinsGained));
+    this.doubled = true;
+    this.buildResultText();
+    this.addResultButtons();
+  }
+
+  // ───────────────────────── 결과 화면 버튼 ─────────────────────────
+  private hitButton(e: PointerEvent): Btn | undefined {
+    const gx = this.scale.transformX(e.pageX);
+    const gy = this.scale.transformY(e.pageY);
+    return this.btns.find((b) => Math.abs(gx - b.x) <= b.w / 2 && Math.abs(gy - b.y) <= b.h / 2);
+  }
+
+  private addButton(cy: number, label: string, onClick: () => void, fill = 0x2d3640): void {
+    const cx = GAME_W / 2;
+    const w = 250;
+    const h = 40;
+    const rect = this.add.rectangle(cx, cy, w, h, fill).setStrokeStyle(1, 0x6b7686).setDepth(35);
+    const txt = this.add
+      .text(cx, cy, label, { fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: COLORS.text })
+      .setOrigin(0.5)
+      .setDepth(36);
+    this.btns.push({ x: cx, y: cy, w, h, rect, txt, onClick });
+  }
+
+  private clearButtons(): void {
+    for (const b of this.btns) {
+      b.rect.destroy();
+      b.txt.destroy();
+    }
+    this.btns = [];
+  }
+
+  private addResultButtons(): void {
+    this.clearButtons();
+    const lang = this.lang;
+    if (this.mode === 'cleared' && !this.doubled) this.addButton(522, t(lang, 'ad.double'), () => void this.watchDouble(), 0x2b6cb0);
+    if (this.mode === 'out' && !this.revived) this.addButton(522, t(lang, 'ad.revive'), () => void this.watchRevive(), 0x2b6cb0);
+    this.addButton(572, t(lang, 'shop.open'), () => this.scene.start('Shop', { back: this.nextSceneData() }));
   }
 
   private onRelease(): void {
@@ -288,7 +419,7 @@ export class PlayScene extends Phaser.Scene {
     const a = r.states[Math.min(i, last)] ?? this.world;
     const b = r.states[Math.min(i + 1, last)] ?? a;
     this.render(b, a, i >= last ? 1 : r.pos - i, r.releaseTicks);
-    this.tagText.setText(slow ? '▶ REPLAY  (slow)' : '▶ REPLAY  · tap to skip');
+    this.tagText.setText(t(this.lang, slow ? 'replay.slow' : 'replay.playing'));
   }
 
   private onEvent(e: SimEvent): void {
@@ -298,7 +429,8 @@ export class PlayScene extends Phaser.Scene {
         break;
       case 'closeCall': {
         const color = { perfect: COLORS.perfect, great: COLORS.great, good: COLORS.good }[e.grade];
-        this.popup(`${e.grade.toUpperCase()}  +${e.points}`, color, e.multiplier > 1 ? `×${e.multiplier}` : '');
+        this.popup(`${t(this.lang, `grade.${e.grade}` as MsgKey)}  +${e.points}`, color, e.multiplier > 1 ? `×${e.multiplier}` : '');
+        if (e.grade === 'perfect') spawnStopFx(this, TRACK_CX, PLAYER_Y, this.skins.stopfx);
         break;
       }
       case 'caught':
@@ -333,15 +465,18 @@ export class PlayScene extends Phaser.Scene {
     if (p?.status === 'finished') {
       this.mode = 'cleared';
       const stars = starsFor(this.spec, p.endTick, this.maxMult);
-      const best = bestStars(this.stage);
-      const isNew = saveStars(this.stage, stars);
+      const before = getProgress();
+      const prevBest = before.stars[String(this.stage)] ?? 0;
+      const res = applyClear(before, this.stage, stars);
       // 동적 Assist: 무사고면 줄이고, 고전하면 늘린다 (유저에게는 알리지 않는다)
-      saveAssist(adjustAssist(this.spec.assistGraceTicks, { cleared: true, deaths: this.deaths }));
-      const star = (n: number): string => '★'.repeat(n) + '☆'.repeat(3 - n);
-      this.bigText.setText('CLEAR').setColor('#f6e05e');
-      this.subText.setText(
-        `${star(stars)}${isNew && best > 0 ? '  (new best)' : ''}\n\nPlace ${p.place} / ${this.world.runners.length}\nScore ${this.world.score}\n\nTap for next stage`,
-      );
+      saveProgress({ ...res.next, assist: adjustAssist(this.spec.assistGraceTicks, { cleared: true, deaths: this.deaths }) });
+      this.coinsGained = res.coins;
+      this.newBestStars = res.newBest && prevBest > 0;
+      this.unlockedSkinName = res.freeSkin ? t(this.lang, (skinById(res.freeSkin)?.nameKey ?? 'skin.character.ember') as MsgKey) : '';
+      this.resultStars = stars;
+      this.bigText.setText(t(this.lang, 'result.clear')).setColor('#f6e05e');
+      this.buildResultText();
+      this.addResultButtons();
       return;
     }
     this.beginReplay();
@@ -381,23 +516,42 @@ export class PlayScene extends Phaser.Scene {
     this.tagText.setText('');
     this.modeSince = this.time.now;
     this.mode = this.lives > 0 ? 'caught' : 'out';
-    if (this.mode === 'out') saveAssist(adjustAssist(this.spec.assistGraceTicks, { cleared: false, deaths: this.deaths }));
+    if (this.mode === 'out') {
+      saveProgress({ ...getProgress(), assist: adjustAssist(this.spec.assistGraceTicks, { cleared: false, deaths: this.deaths }) });
+    }
+    const lang = this.lang;
     const mps = toMps(this.lastCaughtSpeed);
     let why = '';
-    if (a?.kind === 'late-release') {
-      why = `You released ${Math.round(TICKS_TO_MS(a.lateTicks ?? 0))} ms too late`;
-    } else if (a?.kind === 'no-release') {
-      why = 'You were still holding when FREEZE began';
-    } else if (a?.kind === 'pressed-in-watch') {
-      why = 'You started moving during FREEZE';
-    }
-    this.bigText.setText(this.mode === 'out' ? 'OUT OF LIVES' : 'CAUGHT').setColor('#fc8181');
+    if (a?.kind === 'late-release') why = t(lang, 'why.late', { ms: Math.round(TICKS_TO_MS(a.lateTicks ?? 0)) });
+    else if (a?.kind === 'no-release') why = t(lang, 'why.noRelease');
+    else if (a?.kind === 'pressed-in-watch') why = t(lang, 'why.pressedWatch');
+    this.bigText.setText(t(lang, this.mode === 'out' ? 'result.out' : 'result.caught')).setColor('#fc8181');
     this.bigText.setFontSize(this.mode === 'out' ? 30 : 40);
     this.subText.setText(
-      `${why}\n${mps.toFixed(2)} m/s  (limit ${toMps(V_TOL).toFixed(2)} m/s)\n\n${
-        this.mode === 'out' ? 'Tap to restart the stage' : `Lives left: ${this.lives}\nTap to retry`
+      `${why}\n${t(lang, 'speed.line', { mps: mps.toFixed(2), limit: toMps(V_TOL).toFixed(2) })}\n\n${
+        this.mode === 'out' ? t(lang, 'tap.restart') : `${t(lang, 'lives.left', { n: this.lives })}\n${t(lang, 'tap.retry')}`
       }`,
     );
+    this.addResultButtons();
+  }
+
+  /** 클리어 화면 텍스트 (코인 2배 후에도 다시 호출) */
+  private buildResultText(): void {
+    const lang = this.lang;
+    const stars = this.resultStars;
+    const star = '★'.repeat(stars) + '☆'.repeat(3 - stars);
+    const p = this.world.runners[PLAYER_ID];
+    const coins = this.doubled ? this.coinsGained * 2 : this.coinsGained;
+    const lines = [
+      `${star}${this.newBestStars ? `  ${t(lang, 'clear.newBest')}` : ''}`,
+      '',
+      t(lang, 'clear.place', { p: p?.place ?? 0, n: this.world.runners.length }),
+      t(lang, 'clear.score', { s: this.world.score }),
+      t(lang, 'coins.gained', { n: coins }),
+    ];
+    if (this.unlockedSkinName) lines.push('', t(lang, 'skin.unlocked', { name: this.unlockedSkinName }));
+    lines.push('', t(lang, 'tap.next'));
+    this.subText.setText(lines.join('\n'));
   }
 
   // ───────────────────────── 렌더 ─────────────────────────
@@ -446,10 +600,14 @@ export class PlayScene extends Phaser.Scene {
       g.fillCircle(x, y, 6);
     }
 
-    // 플레이어
-    g.fillStyle(player.status === 'caught' ? COLORS.watch : COLORS.player, 1);
-    g.fillCircle(TRACK_CX, PLAYER_Y, 11);
-    g.lineStyle(2, 0x000000, 0.35).strokeCircle(TRACK_CX, PLAYER_Y, 11);
+    // 플레이어 (스킨은 외형 전용)
+    if (player.status === 'caught') {
+      g.fillStyle(COLORS.watch, 1).fillCircle(TRACK_CX, PLAYER_Y, 11);
+      g.lineStyle(2, 0x000000, 0.35).strokeCircle(TRACK_CX, PLAYER_Y, 11);
+    } else {
+      drawTrail(g, TRACK_CX, PLAYER_Y, player.vel / MAX_SPEED, this.skins.trail, this.time.now);
+      drawRunner(g, TRACK_CX, PLAYER_Y, 11, this.skins.character);
+    }
 
     this.drawGuardian(g, cur);
     this.drawTimingBar(g, cur, releaseTicks);
@@ -473,10 +631,10 @@ export class PlayScene extends Phaser.Scene {
     this.comboText.setText(mult > 1 ? `×${mult}` : '');
     this.distText.setText(`${Math.min(trackM, playerM).toFixed(0)} / ${trackM.toFixed(0)} m`);
     this.phaseText.setText(
-      { chant: 'RUN', turn: 'TURNING…', watch: 'FREEZE!', turnback: 'RUN' }[phase],
+      t(this.lang, { chant: 'phase.run', turn: 'phase.turning', watch: 'phase.freeze', turnback: 'phase.run' }[phase] as MsgKey),
     );
     this.phaseText.setColor(phase === 'watch' ? '#fc8181' : phase === 'turn' ? '#ecc94b' : COLORS.dim);
-    this.rankText.setText(`#${rankOf(cur, PLAYER_ID)}/${cur.runners.length}\n${aliveCount(cur)} alive`);
+    this.rankText.setText(`#${rankOf(cur, PLAYER_ID)}/${cur.runners.length}\n${t(this.lang, 'hud.alive', { n: aliveCount(cur) })}`);
     this.hintText.setVisible(!this.started && this.mode === 'play');
     if (this.mode === 'play') this.tagText.setText('');
     if (this.debugText) {
@@ -518,6 +676,7 @@ export class PlayScene extends Phaser.Scene {
     }
 
     g.fillStyle(color, 1).fillCircle(cx, cy, 34);
+    drawGuardianDeco(g, cx, cy, 34, this.skins.guardian);
     // 얼굴: 등을 보이면 눈 없음, 회전 중 반눈, 정면이면 큰 눈
     if (phase === 'watch') {
       g.fillStyle(0xffffff, 1).fillCircle(cx - 12, cy - 4, 8).fillCircle(cx + 12, cy - 4, 8);

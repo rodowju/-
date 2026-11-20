@@ -1,0 +1,148 @@
+import type { Lang } from './progress';
+
+/** 모든 UI 문자열. 키 단위로 관리하여 번역 추가를 쉽게 한다. {name} 형태의 자리표시자 사용. */
+const EN = {
+  'hud.stage': 'STAGE {n}',
+  'hud.alive': '{n} alive',
+  'hint.hold': 'HOLD  to run',
+  'hint.release': 'RELEASE  to stop',
+  'phase.run': 'RUN',
+  'phase.turning': 'TURNING…',
+  'phase.freeze': 'FREEZE!',
+  'grade.perfect': 'PERFECT',
+  'grade.great': 'GREAT',
+  'grade.good': 'GOOD',
+  'replay.playing': '▶ REPLAY  · tap to skip',
+  'replay.slow': '▶ REPLAY  (slow)',
+  'result.caught': 'CAUGHT',
+  'result.out': 'OUT OF LIVES',
+  'result.clear': 'CLEAR',
+  'why.late': 'You released {ms} ms too late',
+  'why.noRelease': 'You were still holding when FREEZE began',
+  'why.pressedWatch': 'You started moving during FREEZE',
+  'speed.line': '{mps} m/s  (limit {limit} m/s)',
+  'tap.retry': 'Tap to retry',
+  'tap.restart': 'Tap to restart the stage',
+  'tap.next': 'Tap for next stage',
+  'lives.left': 'Lives left: {n}',
+  'clear.place': 'Place {p} / {n}',
+  'clear.score': 'Score {s}',
+  'clear.newBest': '(new best)',
+  'coins.gained': '+{n} coins',
+  'skin.unlocked': 'New skin unlocked: {name}',
+  'ad.revive': '▶ Watch ad: +1 life',
+  'ad.double': '▶ Watch ad: ×2 coins',
+  'ad.mock': 'Ad (mock)',
+  'ad.closing': 'closing in {s}s',
+  'shop.open': 'Shop',
+  'shop.title': 'Shop',
+  'shop.back': 'Back',
+  'shop.buy': 'Buy',
+  'shop.owned': 'Owned',
+  'shop.equipped': 'Equipped',
+  'shop.notEnough': 'Not enough coins',
+  'shop.bought': 'Purchased!',
+  'tab.character': 'Runner',
+  'tab.trail': 'Trail',
+  'tab.stopfx': 'Stop FX',
+  'tab.guardian': 'Guardian',
+  'lang.toggle': 'KO',
+  'skin.character.default': 'Teal',
+  'skin.character.ember': 'Ember',
+  'skin.character.mint': 'Mint Block',
+  'skin.character.violet': 'Violet Gem',
+  'skin.character.gold': 'Gold Ring',
+  'skin.trail.none': 'None',
+  'skin.trail.dust': 'Dust',
+  'skin.trail.spark': 'Spark',
+  'skin.trail.ribbon': 'Ribbon',
+  'skin.stopfx.ring': 'Ring',
+  'skin.stopfx.burst': 'Burst',
+  'skin.stopfx.confetti': 'Confetti',
+  'skin.guardian.default': 'Classic',
+  'skin.guardian.frame': 'Blue Frame',
+  'skin.guardian.crown': 'Crown',
+} as const;
+
+export type MsgKey = keyof typeof EN;
+
+const KO: Record<MsgKey, string> = {
+  'hud.stage': '스테이지 {n}',
+  'hud.alive': '생존 {n}',
+  'hint.hold': '누르고 있으면 달려요',
+  'hint.release': '떼면 멈춰요',
+  'phase.run': '달려!',
+  'phase.turning': '돌아본다…',
+  'phase.freeze': '멈춰!',
+  'grade.perfect': '퍼펙트',
+  'grade.great': '그레이트',
+  'grade.good': '굿',
+  'replay.playing': '▶ 리플레이 · 탭하면 건너뛰기',
+  'replay.slow': '▶ 리플레이 (슬로우)',
+  'result.caught': '들켰다!',
+  'result.out': '목숨 소진',
+  'result.clear': '클리어',
+  'why.late': '{ms}ms 늦게 손을 뗐어요',
+  'why.noRelease': '멈춤 시작 때까지 손을 떼지 않았어요',
+  'why.pressedWatch': '멈춤 중에 다시 움직였어요',
+  'speed.line': '{mps} m/s (허용 {limit} m/s)',
+  'tap.retry': '탭해서 다시 도전',
+  'tap.restart': '탭해서 스테이지 다시 시작',
+  'tap.next': '탭해서 다음 스테이지',
+  'lives.left': '남은 목숨: {n}',
+  'clear.place': '{n}명 중 {p}위',
+  'clear.score': '점수 {s}',
+  'clear.newBest': '(최고 기록)',
+  'coins.gained': '+{n} 코인',
+  'skin.unlocked': '새 스킨 해금: {name}',
+  'ad.revive': '▶ 광고 보고 목숨 +1',
+  'ad.double': '▶ 광고 보고 코인 ×2',
+  'ad.mock': '광고 (테스트)',
+  'ad.closing': '{s}초 후 닫힘',
+  'shop.open': '상점',
+  'shop.title': '상점',
+  'shop.back': '돌아가기',
+  'shop.buy': '구매',
+  'shop.owned': '보유',
+  'shop.equipped': '장착 중',
+  'shop.notEnough': '코인이 부족해요',
+  'shop.bought': '구매 완료!',
+  'tab.character': '러너',
+  'tab.trail': '트레일',
+  'tab.stopfx': '정지 효과',
+  'tab.guardian': '술래',
+  'lang.toggle': 'EN',
+  'skin.character.default': '민트',
+  'skin.character.ember': '불씨',
+  'skin.character.mint': '민트 블록',
+  'skin.character.violet': '바이올렛 젬',
+  'skin.character.gold': '골드 링',
+  'skin.trail.none': '없음',
+  'skin.trail.dust': '먼지',
+  'skin.trail.spark': '불꽃',
+  'skin.trail.ribbon': '리본',
+  'skin.stopfx.ring': '링',
+  'skin.stopfx.burst': '버스트',
+  'skin.stopfx.confetti': '색종이',
+  'skin.guardian.default': '클래식',
+  'skin.guardian.frame': '블루 프레임',
+  'skin.guardian.crown': '왕관',
+};
+
+export const DICTS: Readonly<Record<Lang, Readonly<Record<MsgKey, string>>>> = { en: EN, ko: KO };
+
+export function t(lang: Lang, key: MsgKey, params?: Readonly<Record<string, string | number>>): string {
+  const raw = DICTS[lang][key] ?? EN[key];
+  if (!params) return raw;
+  return raw.replace(/\{(\w+)\}/g, (_, k: string) => (k in params ? String(params[k]) : `{${k}}`));
+}
+
+/** 브라우저 언어 → 지원 언어 (한국어면 ko, 그 외 en) */
+export function detectLang(navLang: string | undefined): Lang {
+  return navLang?.toLowerCase().startsWith('ko') ? 'ko' : 'en';
+}
+
+/** 번역 키가 {자리표시자} 를 일관되게 갖는지 검사하기 위한 도우미 */
+export function placeholders(s: string): string[] {
+  return [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1] ?? '').sort();
+}

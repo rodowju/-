@@ -1,61 +1,46 @@
-/** 진행 저장 (localStorage). 접근이 막힌 환경에서도 게임이 동작하도록 모든 접근을 try/catch 로 감싼다. */
+import { defaultProgress, migrate, type Lang, type Progress } from '../logic/progress';
+import { detectLang } from '../logic/i18n';
+
+/**
+ * 진행 저장 (localStorage). 접근이 막힌 환경(프라이빗 모드 등)에서도 게임이 동작하도록
+ * 모든 접근을 try/catch 로 감싸고, 실패 시 메모리 값으로 폴백한다.
+ */
 const KEY = 'freeze.progress.v1';
 
-interface Progress {
-  /** stage → 최고 별 개수 */
-  stars: Record<string, number>;
-  /** 동적 Assist(tick). 미설정이면 스테이지 기본값을 쓴다. */
-  assist?: number;
-}
+let memory: Progress | undefined;
 
-function load(): Progress {
+export function getProgress(): Progress {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const p = JSON.parse(raw) as Progress;
-      if (p && typeof p === 'object' && p.stars) return p;
+      memory = migrate(JSON.parse(raw));
+      return memory;
     }
   } catch {
-    /* 무시: 저장 불가 환경 */
+    /* 읽기/파싱 실패: 메모리 폴백 */
   }
-  return { stars: {} };
+  return memory ?? defaultProgress();
 }
 
-export function bestStars(stage: number): number {
-  return load().stars[String(stage)] ?? 0;
-}
-
-/** 다음에 플레이할 스테이지: 클리어한 최대 스테이지 + 1 (기록 없으면 1) */
-export function nextStage(): number {
-  const cleared = Object.keys(load().stars).map(Number).filter((n) => Number.isInteger(n) && n > 0);
-  return cleared.length ? Math.max(...cleared) + 1 : 1;
-}
-
-export function loadAssist(): number | undefined {
-  const a = load().assist;
-  return typeof a === 'number' && Number.isFinite(a) ? a : undefined;
-}
-
-export function saveAssist(assist: number): void {
-  const p = load();
-  p.assist = assist;
+export function saveProgress(p: Progress): void {
+  memory = p;
   try {
     localStorage.setItem(KEY, JSON.stringify(p));
   } catch {
-    /* 무시 */
+    /* 저장 불가 환경: 이번 세션 동안만 유지 */
   }
 }
 
-/** 갱신되었으면 true */
-export function saveStars(stage: number, stars: number): boolean {
-  const p = load();
-  const prev = p.stars[String(stage)] ?? 0;
-  if (stars <= prev) return false;
-  p.stars[String(stage)] = stars;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(p));
-  } catch {
-    /* 무시 */
-  }
-  return true;
+/** 앱 실행 시 1회 호출 (전면 광고 정책의 세션 수 집계) */
+export function noteSession(): void {
+  const p = getProgress();
+  saveProgress({ ...p, sessions: p.sessions + 1 });
+}
+
+export function getLang(): Lang {
+  return getProgress().lang ?? detectLang(typeof navigator !== 'undefined' ? navigator.language : undefined);
+}
+
+export function setLang(lang: Lang): void {
+  saveProgress({ ...getProgress(), lang });
 }
