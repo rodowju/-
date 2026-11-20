@@ -1,0 +1,11 @@
+# Hostinger(Apache)용: 해시된 에셋은 장기 캐시, 서비스 워커/HTML 은 항상 최신 확인
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css|png|svg)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "^(sw\.js|index\.html|manifest\.webmanifest|workbox-.*\.js)$">
+    Header set Cache-Control "public, max-age=0, must-revalidate"
+  </FilesMatch>
+  Header set X-Content-Type-Options "nosniff"
+</IfModule>
+AddType application/manifest+json .webmanifest
