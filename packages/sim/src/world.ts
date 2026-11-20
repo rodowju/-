@@ -1,0 +1,177 @@
+import { getBotInputs } from './bots';
+import {
+  ACCEL,
+  CC_GOOD_TICKS,
+  CC_GREAT_TICKS,
+  CC_PERFECT_TICKS,
+  CLEAR_SCORE,
+  CLOSE_CALL_BASE_SCORE,
+  COMBO_MAX_MULT,
+  COMBO_PER_LEVEL,
+  COMBO_POINTS,
+  DECEL,
+  GRACE_TICKS,
+  MAX_SPEED,
+  SAFE_RELEASE_TICKS,
+  TIME_BONUS_PER_6_TICKS,
+  TURN_TICKS,
+  V_TOL,
+} from './config';
+import { advanceGuardian, initialGuardian } from './guardian';
+import type {
+  CloseCallGrade,
+  GuardianState,
+  InputEvent,
+  RunnerState,
+  SimEvent,
+  StageSpec,
+  WorldState,
+} from './types';
+
+export const PLAYER_ID = 0;
+
+export function createWorld(spec: StageSpec): WorldState {
+  const runners: RunnerState[] = [];
+  for (let i = 0; i <= spec.botCount; i++) {
+    runners.push({ id: i, pos: 0, vel: 0, holding: false, status: 'running', endTick: -1, place: 0, nextInput: 0 });
+  }
+  return {
+    tick: 0,
+    guardian: initialGuardian(),
+    runners,
+    comboPoints: 0,
+    score: 0,
+    finishedCount: 0,
+    events: [],
+  };
+}
+
+export function comboMultiplier(points: number): number {
+  return Math.min(COMBO_MAX_MULT, 1 + Math.floor(points / COMBO_PER_LEVEL));
+}
+
+/** Watch 시작 tick (현재 phase가 turn 또는 watch일 때만 의미 있음) */
+function watchStartOf(g: GuardianState): number | undefined {
+  if (g.phase === 'turn') return g.phaseStart + TURN_TICKS;
+  if (g.phase === 'watch') return g.phaseStart;
+  return undefined;
+}
+
+/** 릴리즈 시점의 Close Call 등급. 해당 없으면 undefined. (GDD §4.4) */
+export function gradeRelease(g: GuardianState, tick: number, assist: number): CloseCallGrade | undefined {
+  const ws = watchStartOf(g);
+  if (ws === undefined) return undefined;
+  const d = ws + SAFE_RELEASE_TICKS;
+  const delta = d - tick; // 양수: D보다 얼마나 이른가
+  if (delta < -assist) return undefined; // 너무 늦음 → 탈락 판정으로 처리
+  if (delta <= CC_PERFECT_TICKS) return 'perfect';
+  if (delta <= CC_GREAT_TICKS) return 'great';
+  if (delta <= CC_GOOD_TICKS) return 'good';
+  return undefined;
+}
+
+/**
+ * 한 tick 전진. 순수 함수: 입력 state는 변경하지 않는다.
+ * @param playerInputs 이 tick(state.tick)에 발생한 플레이어 입력
+ */
+export function step(state: WorldState, spec: StageSpec, playerInputs: readonly InputEvent[]): WorldState {
+  const tick = state.tick;
+  const events: SimEvent[] = [];
+
+  // 1. 술래 phase 전이
+  const adv = advanceGuardian(spec, state.guardian, tick);
+  const guardian = adv.guardian;
+  for (const tr of adv.transitions) {
+    events.push({ type: 'phase', tick, phase: tr.phase, cycleIdx: tr.cycleIdx });
+  }
+
+  let comboPoints = state.comboPoints;
+  let score = state.score;
+  let finishedCount = state.finishedCount;
+  const botInputs = getBotInputs(spec);
+
+  const runners: RunnerState[] = state.runners.map((r) => {
+    let holding = r.holding;
+    let nextInput = r.nextInput;
+    let vel = r.vel;
+    let status = r.status;
+    let endTick = r.endTick;
+    let place = r.place;
+    let pos = r.pos;
+
+    // 2. 입력 적용
+    const pending: InputEvent[] = [];
+    if (r.id === PLAYER_ID) {
+      for (const ev of playerInputs) if (ev.tick === tick) pending.push(ev);
+    } else {
+      const list = botInputs[r.id - 1] ?? [];
+      while (nextInput < list.length && (list[nextInput]?.tick ?? Infinity) <= tick) {
+        const ev = list[nextInput];
+        if (ev && ev.tick === tick) pending.push(ev);
+        nextInput++;
+      }
+    }
+
+    for (const ev of pending) {
+      if (status !== 'running') break;
+      if (ev.type === 'down') {
+        holding = true;
+      } else {
+        // 'up'
+        const wasMoving = holding && vel > 0;
+        holding = false;
+        if (r.id === PLAYER_ID && wasMoving) {
+          const grade = gradeRelease(guardian, tick, spec.assistGraceTicks);
+          if (grade) {
+            const mult = comboMultiplier(comboPoints);
+            comboPoints += COMBO_POINTS[grade];
+            const pts = CLOSE_CALL_BASE_SCORE[grade] * mult;
+            score += pts;
+            events.push({ type: 'closeCall', tick, runner: r.id, grade, points: pts, multiplier: mult });
+          }
+        }
+      }
+    }
+
+    // 3. 이동
+    if (status === 'running') {
+      vel = holding ? Math.min(MAX_SPEED, vel + ACCEL) : Math.max(0, vel - DECEL);
+      pos += vel;
+
+      // 4. 판정
+      const grace = GRACE_TICKS + (r.id === PLAYER_ID ? spec.assistGraceTicks : 0);
+      if (guardian.phase === 'watch' && tick >= guardian.phaseStart + grace && vel > V_TOL) {
+        status = 'caught';
+        endTick = tick;
+        events.push({ type: 'caught', tick, runner: r.id, speed: vel });
+        vel = 0;
+        holding = false;
+        if (r.id === PLAYER_ID) comboPoints = 0;
+      } else if (pos >= spec.trackLength) {
+        // 5. 도착
+        status = 'finished';
+        endTick = tick;
+        pos = spec.trackLength;
+        vel = 0;
+        holding = false;
+        finishedCount += 1;
+        place = finishedCount;
+        events.push({ type: 'finished', tick, runner: r.id, place });
+        if (r.id === PLAYER_ID) {
+          const bonus = Math.floor(Math.max(0, spec.parTicks - tick) / 6) * TIME_BONUS_PER_6_TICKS;
+          score += CLEAR_SCORE + bonus;
+        }
+      }
+    }
+
+    return { id: r.id, pos, vel, holding, status, endTick, place, nextInput };
+  });
+
+  return { tick: tick + 1, guardian, runners, comboPoints, score, finishedCount, events };
+}
+
+/** 플레이어의 런이 끝났는가 (탈락 또는 도착) */
+export function isPlayerDone(state: WorldState): boolean {
+  const p = state.runners[PLAYER_ID];
+  return !p || p.status !== 'running';
+}
