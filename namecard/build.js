@@ -7,7 +7,7 @@ const C = {
   person: '박성진', title: '의학박사',
   addr1: '울산광역시 남구 삼산로278번길 8, 7층', addr2: '(스타벅스 삼산로점 건물)',
   tel: '052-707-1000', mobile: '010-2875-8088',
-  email: 'cosmedi@daum.net', web: 'www.sclinic.co.kr',
+  email: 'medicos51@gmail.com', web: 'www.sclinic.co.kr',
 };
 
 const font = (fam, w, file) => ['korean', 'latin']
