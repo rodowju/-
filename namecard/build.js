@@ -4,7 +4,7 @@ const QR = require('qrcode'), { chromium } = require('playwright');
 
 const C = {
   nameKo: '더에스의원', nameEn: 'THE S CLINIC', dept: '성형외과',
-  person: '[성함]', title: '[직함]',
+  person: '박성진', title: '의학박사',
   addr1: '울산광역시 남구 삼산로278번길 8, 7층', addr2: '(스타벅스 삼산로점 건물)',
   tel: '052-707-1000', mobile: '010-2875-8088',
   email: 'cosmedi@daum.net', web: 'www.sclinic.co.kr',
