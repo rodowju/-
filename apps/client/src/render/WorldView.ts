@@ -16,13 +16,16 @@ import { COLORS, GAME_H, GAME_W, PLAYER_Y, PPM, TRACK_CX, TRACK_LEFT, TRACK_RIGH
 import { t, type MsgKey } from '../logic/i18n';
 import type { Lang } from '../logic/progress';
 import type { Skin, SkinCategory } from '../logic/skins';
-import { drawGuardianDeco, drawRunner, drawTrail } from './skinDraw';
+import { drawGuardianDeco, drawJangseung, drawRunner, drawTrail } from './skinDraw';
 
 const UM_PER_M = 1_000_000;
 const toMps = (v: number): number => (v * TICK_HZ) / UM_PER_M;
 const lerp = (a: number, b: number, k: number): number => a + (b - a) * k;
 
 /** 다른 사람 플레이어 색 (내 스킨과 구분) */
+/** 이 높이보다 위(술래·타이밍 바 영역 또는 화면 밖)로 앞서간 상대는 ▲ 표시로 바꾼다 */
+const AHEAD_Y = 190;
+
 const OTHER_HUMAN_COLORS = [0xf6ad55, 0xb794f4, 0x63b3ed, 0xfbb6ce];
 
 export interface DrawOptions {
@@ -57,6 +60,8 @@ export class WorldView {
   private readonly distText: Phaser.GameObjects.Text;
   private readonly rankText: Phaser.GameObjects.Text;
   private readonly debugText?: Phaser.GameObjects.Text;
+  /** 화면 위로 벗어난 상대의 거리 표시 (필요할 때 만들어 재사용) */
+  private readonly aheadTexts: Phaser.GameObjects.Text[] = [];
 
   constructor(
     private readonly scene: Phaser.Scene,
@@ -167,18 +172,30 @@ export class WorldView {
     const others = cur.runners.filter((r) => r.id !== o.me);
     const n = others.length;
     let humanIdx = 0;
+    let aheadUsed = 0;
     others.forEach((r, i) => {
       const rp = pr.runners[r.id] ?? r;
       const x = n > 1 ? TRACK_LEFT + 22 + (i * (TRACK_RIGHT - TRACK_LEFT - 44)) / (n - 1) : TRACK_LEFT + 30;
-      const y = sy(lerp(rp.pos, r.pos, o.alpha) / UM_PER_M);
+      const posM = lerp(rp.pos, r.pos, o.alpha) / UM_PER_M;
+      const y = sy(posM);
       const human = isHuman(spec, r.id);
       const color = human ? OTHER_HUMAN_COLORS[humanIdx++ % OTHER_HUMAN_COLORS.length]! : COLORS.bot;
+      // 술래·타이밍 바 영역(위쪽)이나 화면 밖으로 앞서간 상대: 가장자리에 ▲ + 앞선 거리
+      if (y < AHEAD_Y && r.status !== 'caught' && !o.dim) {
+        g.fillStyle(color, 0.95).fillTriangle(x, AHEAD_Y - 7, x - 6, AHEAD_Y + 3, x + 6, AHEAD_Y + 3);
+        if (human) g.lineStyle(1.5, 0xffffff, 0.8).strokeTriangle(x, AHEAD_Y - 7, x - 6, AHEAD_Y + 3, x + 6, AHEAD_Y + 3);
+        const label = this.aheadText(aheadUsed++);
+        label.setText(`${Math.max(1, Math.round(posM - meM))}m`).setPosition(x, AHEAD_Y + 6).setColor(human ? '#ffffff' : '#a0aec0').setVisible(true);
+        return;
+      }
       if (y < -10 || y > GAME_H + 10) return;
       const out = r.status === 'caught';
       g.fillStyle(out ? COLORS.botOut : color, out ? 0.6 : 1);
       g.fillCircle(x, y, human ? 8 : 6);
       if (human) g.lineStyle(2, 0xffffff, 0.8).strokeCircle(x, y, 8);
     });
+
+    for (let i = aheadUsed; i < this.aheadTexts.length; i++) this.aheadTexts[i]!.setVisible(false);
 
     // 나 (스킨은 외형 전용)
     if (me.status === 'caught') {
@@ -206,6 +223,8 @@ export class WorldView {
     this.distText.setText(`${Math.min(trackM, meM).toFixed(0)} / ${trackM.toFixed(0)} m`);
     this.phaseText.setText(t(this.lang, ({ chant: 'phase.run', turn: 'phase.turning', watch: 'phase.freeze', turnback: 'phase.run' } as const)[phase] as MsgKey));
     this.phaseText.setColor(phase === 'watch' ? '#fc8181' : phase === 'turn' ? '#ecc94b' : COLORS.dim);
+    // 혼자 달릴 때는 순위·생존 표시가 의미 없으므로 숨긴다
+    this.rankText.setVisible(cur.runners.length > 1);
     this.rankText.setText(`#${rankOf(cur, o.me)}/${cur.runners.length}\n${t(this.lang, 'hud.alive', { n: aliveCount(cur) })}`);
     this.hintText.setVisible(o.showHint === true);
     if (this.debugText && !this.debugText.text.startsWith('net')) {
@@ -232,6 +251,15 @@ export class WorldView {
     }
   }
 
+  private aheadText(i: number): Phaser.GameObjects.Text {
+    let t = this.aheadTexts[i];
+    if (!t) {
+      t = this.scene.add.text(0, 0, '', { fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: '#a0aec0' }).setOrigin(0.5, 0).setDepth(6);
+      this.aheadTexts.push(t);
+    }
+    return t;
+  }
+
   /** 상단 술래: 등(chant) / 회전(turn) / 정면(watch) */
   private drawGuardian(g: Phaser.GameObjects.Graphics, s: WorldState): void {
     const cx = GAME_W / 2;
@@ -246,6 +274,15 @@ export class WorldView {
       const frac = ((elapsed * 5) % dur) / dur;
       g.lineStyle(3, COLORS.chant, 1 - frac).strokeCircle(cx, cy, 34 + frac * 22);
       for (let i = 0; i < 5; i++) g.fillStyle(i <= beat ? COLORS.chant : 0x2d3640, 1).fillCircle(cx - 40 + i * 20, 108, 4);
+    }
+    if (this.skins.guardian.style === 'jangseung') {
+      let open = phase === 'watch' ? 1 : 0;
+      if (phase === 'turn' || phase === 'turnback') {
+        const k = Math.min(1, elapsed / this.spec.turnTicks);
+        open = phase === 'turn' ? k : 1 - k;
+      }
+      drawJangseung(g, cx, cy, 34, open, color, phase === 'watch');
+      return;
     }
     g.fillStyle(color, 1).fillCircle(cx, cy, 34);
     drawGuardianDeco(g, cx, cy, 34, this.skins.guardian);

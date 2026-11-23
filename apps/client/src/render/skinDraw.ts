@@ -100,3 +100,68 @@ export function drawGuardianDeco(g: G, cx: number, cy: number, r: number, skin: 
     );
   }
 }
+
+/**
+ * 장승 술래 (천하대장군). 시안 A 를 축소해 그린다.
+ * @param open 0 = 등(뒷면), 1 = 정면. 돌아보는 중에는 그 사이 값.
+ * @param ring 상태 색(초록/노랑/빨강) — 바깥 원으로 표시해 가독성을 유지한다.
+ */
+export function drawJangseung(g: G, cx: number, cy: number, r: number, open: number, ring: number, watching: boolean): void {
+  const k = r / 88; // 시안 좌표(200x240, 원 반지름 88, 중심 100,110) → 게임 좌표
+  const X = (x: number): number => cx + (x - 100) * k;
+  const Y = (y: number): number => cy + (y - 110) * k;
+  const WOOD = 0xa0683a;
+  const FACE = 0xd9a066;
+  const DARK = 0x3b2412;
+  const INK = 0x1a1a1a;
+
+  g.fillStyle(ring, 0.18).fillCircle(cx, cy, r);
+  g.lineStyle(3, ring, 1).strokeCircle(cx, cy, r);
+
+  // 몸통(기둥)
+  g.fillStyle(WOOD, 1).fillRoundedRect(X(62), Y(70), 76 * k, 132 * k, 6 * k);
+  // 관모
+  g.fillStyle(INK, 1).fillEllipse(X(100), Y(68), 84 * k, 70 * k);
+  g.fillRoundedRect(X(48), Y(66), 104 * k, 12 * k, 5 * k);
+
+  if (open < 0.25) {
+    // 뒷면: 나뭇결
+    g.lineStyle(Math.max(1, 2 * k * 2), DARK, 0.5);
+    for (const x of [76, 92, 108, 124]) g.lineBetween(X(x), Y(84), X(x), Y(196));
+    g.fillStyle(DARK, 0.5).fillEllipse(X(100), Y(140), 12 * k, 20 * k);
+    return;
+  }
+
+  // 정면(돌아보는 중에는 옆으로 치우치고 좁게)
+  const sq = Math.min(1, 0.45 + open * 0.55);
+  const dx = 18 * (1 - open);
+  const FX = (x: number): number => X(100 + dx + (x - 100) * sq);
+  const w = (v: number): number => v * k * sq;
+
+  g.fillStyle(FACE, 1).fillRoundedRect(FX(64), Y(80), w(72), 104 * k, 6 * k);
+  // 눈썹
+  g.lineStyle(Math.max(2, 7 * k), INK, 1);
+  g.lineBetween(FX(68), Y(96), FX(94), Y(104));
+  g.lineBetween(FX(132), Y(96), FX(106), Y(104));
+  // 눈
+  const pr = (watching ? 8 : 5) * k;
+  for (const ex of [82, 118]) {
+    g.fillStyle(0xffffff, 1).fillEllipse(FX(ex), Y(118), w(26), 26 * k);
+    g.lineStyle(Math.max(1, 3 * k), INK, 1).strokeEllipse(FX(ex), Y(118), w(26), 26 * k);
+    g.fillStyle(INK, 1).fillCircle(FX(ex), Y(118), pr);
+  }
+  // 코
+  g.fillStyle(WOOD, 1).fillTriangle(FX(100), Y(120), FX(92), Y(150), FX(108), Y(150));
+  // 이빨 웃음
+  const pts: Phaser.Geom.Point[] = [];
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    const x = (1 - t) * (1 - t) * 72 + 2 * (1 - t) * t * 100 + t * t * 128;
+    const y = (1 - t) * (1 - t) * 158 + 2 * (1 - t) * t * 182 + t * t * 158;
+    pts.push(new Phaser.Geom.Point(FX(x), Y(y)));
+  }
+  g.fillStyle(0xffffff, 1).fillPoints(pts, true);
+  g.lineStyle(Math.max(1, 3 * k), INK, 1).strokePoints(pts, true);
+  g.lineStyle(Math.max(1, 2 * k), INK, 1);
+  for (const tx of [84, 94, 104, 114]) g.lineBetween(FX(tx), Y(160), FX(tx), Y(169));
+}

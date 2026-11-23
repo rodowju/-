@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#111418" />
+    <meta name="description" content="Run while the guardian looks away, freeze when it turns. A one-finger red light, green light game in your browser." />
+    <link rel="alternate" hreflang="ko" href="https://freeze.dogujip.com/" />
+    <link rel="alternate" hreflang="en" href="https://freeze.dogujip.com/en/" />
+    <link rel="alternate" hreflang="x-default" href="https://freeze.dogujip.com/en/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Freeze Run" />
+    <meta property="og:description" content="Run while the guardian looks away, freeze when it turns." />
+    <meta name="apple-mobile-web-app-title" content="Freeze Run" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
+    <title>Freeze Run</title>
+    <link rel="manifest" href="/manifest-en.webmanifest" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #111418; overflow: hidden; overscroll-behavior: none; }
+      body { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+      #game { position: fixed; inset: 0; }
+      canvas { display: block; touch-action: none; }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

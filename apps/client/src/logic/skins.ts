@@ -5,6 +5,8 @@
 export type SkinCategory = 'character' | 'trail' | 'stopfx' | 'guardian';
 
 export const CATEGORIES: readonly SkinCategory[] = ['character', 'trail', 'stopfx', 'guardian'];
+/** 상점 탭: 술래는 장승으로 고정(2026-11-23 결정)이라 상점에서 고르지 않는다 */
+export const SHOP_CATEGORIES: readonly SkinCategory[] = ['character', 'trail', 'stopfx'];
 
 export interface Skin {
   readonly id: string;
@@ -47,6 +49,8 @@ export const SKINS: readonly Skin[] = [
   s('guardian', 'default', 0, 0xffffff, 'default'),
   s('guardian', 'frame', 100, 0x63b3ed, 'frame'),
   s('guardian', 'crown', 180, 0xf6e05e, 'crown'),
+  // 장승: 술래 자체를 장승 그림으로 바꾼다 (상태 색은 바깥 원으로 유지)
+  s('guardian', 'jangseung', 150, 0xa0683a, 'jangseung'),
 ];
 
 /** 처음부터 소유하는 기본 스킨 */
@@ -71,3 +75,21 @@ export function skinsOf(category: SkinCategory): Skin[] {
 
 /** 스테이지 3 첫 클리어 시 무료로 해금되는 스킨 (GDD §9 FTUE) */
 export const FREE_SKIN_ID = 'character.ember';
+
+/**
+ * 주소로 술래를 고른다: ?guardian=jangseung | classic (지인 비교 테스트용).
+ * 저장된 장착값은 바꾸지 않고, 그 주소로 연 동안만 적용한다.
+ */
+const GUARDIAN_PARAM: Readonly<Record<string, string>> = {
+  classic: 'guardian.default',
+  jangseung: 'guardian.jangseung',
+};
+
+/** 술래는 장승(천하대장군)으로 고정. ?guardian=classic 주소로만 예전 술래를 볼 수 있다 */
+export const FIXED_GUARDIAN_ID = 'guardian.jangseung';
+
+export function guardianFromQuery(search: string): Skin | undefined {
+  const v = new URLSearchParams(search).get('guardian');
+  const id = v ? GUARDIAN_PARAM[v.toLowerCase()] : undefined;
+  return id ? skinById(id) : undefined;
+}
