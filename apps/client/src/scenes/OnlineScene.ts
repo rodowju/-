@@ -3,7 +3,7 @@ import { NetSession, parseS2C, encode, type C2S } from '@freeze/net';
 import { PLAYER_ID, type SimEvent, type WorldState } from '@freeze/sim';
 import { COLORS, GAME_H, GAME_W, PLAYER_Y, TRACK_CX } from '../layout';
 import { t, type MsgKey } from '../logic/i18n';
-import { DEFAULT_EQUIPPED, skinById, type Skin, type SkinCategory } from '../logic/skins';
+import { DEFAULT_EQUIPPED, skinById, type Skin, type SkinCategory, guardianFromQuery, FIXED_GUARDIAN_ID } from '../logic/skins';
 import { WorldView } from '../render/WorldView';
 import { spawnStopFx } from '../render/skinDraw';
 import { sfx } from '../audio/sfx';
@@ -72,7 +72,7 @@ export class OnlineScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor('#111418');
     const eq = getProgress().equipped;
     const pick = (c: SkinCategory): Skin => skinById(eq[c]) ?? (skinById(DEFAULT_EQUIPPED[c]) as Skin);
-    this.skins = { character: pick('character'), trail: pick('trail'), stopfx: pick('stopfx'), guardian: pick('guardian') };
+    this.skins = { character: pick('character'), trail: pick('trail'), stopfx: pick('stopfx'), guardian: guardianFromQuery(location.search) ?? (skinById(FIXED_GUARDIAN_ID) as Skin) };
     sfx.setMuted(getProgress().muted === true);
 
     const mono = { fontFamily: 'system-ui, sans-serif' };

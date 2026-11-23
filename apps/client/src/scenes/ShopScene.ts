@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { CATEGORIES, SKINS, skinById, skinsOf, type Skin, type SkinCategory } from '../logic/skins';
+import { SHOP_CATEGORIES as CATEGORIES, SKINS, skinById, skinsOf, type Skin, type SkinCategory } from '../logic/skins';
 import { buy, equip } from '../logic/progress';
 import { t, type MsgKey } from '../logic/i18n';
 import { getLang, getProgress, saveProgress, setLang } from '../services/storage';

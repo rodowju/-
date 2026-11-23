@@ -38,7 +38,11 @@ export function noteSession(): void {
 }
 
 export function getLang(): Lang {
-  return getProgress().lang ?? detectLang(typeof navigator !== 'undefined' ? navigator.language : undefined);
+  const saved = getProgress().lang;
+  if (saved) return saved;
+  // 영문 주소(/en/)로 들어오면 영어로 시작 (11-23)
+  if (typeof location !== 'undefined' && /^\/en(\/|$)/.test(location.pathname)) return 'en';
+  return detectLang(typeof navigator !== 'undefined' ? navigator.language : undefined);
 }
 
 export function setLang(lang: Lang): void {

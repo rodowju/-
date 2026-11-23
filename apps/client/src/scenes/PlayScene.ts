@@ -29,7 +29,7 @@ import { COLORS, GAME_W, PLAYER_Y, TRACK_CX } from '../layout';
 import { addCoins, applyClear, nextStageOf } from '../logic/progress';
 import { shouldShowInterstitial } from '../logic/adPolicy';
 import { t, type MsgKey } from '../logic/i18n';
-import { DEFAULT_EQUIPPED, skinById, type Skin, type SkinCategory } from '../logic/skins';
+import { DEFAULT_EQUIPPED, skinById, type Skin, type SkinCategory, guardianFromQuery, FIXED_GUARDIAN_ID } from '../logic/skins';
 import { spawnStopFx } from '../render/skinDraw';
 import { WorldView } from '../render/WorldView';
 import { fetchGhost, ghostTrack, onlineAvailable, submitGhost } from '../services/net';
@@ -152,10 +152,11 @@ export class PlayScene extends Phaser.Scene {
     const eq = getProgress().equipped;
     const pick = (c: SkinCategory): Skin =>
       skinById(eq[c]) ?? (skinById(DEFAULT_EQUIPPED[c]) as Skin);
-    this.skins = { character: pick('character'), trail: pick('trail'), stopfx: pick('stopfx'), guardian: pick('guardian') };
+    this.skins = { character: pick('character'), trail: pick('trail'), stopfx: pick('stopfx'), guardian: guardianFromQuery(location.search) ?? (skinById(FIXED_GUARDIAN_ID) as Skin) };
     this.coinsGained = 0;
     this.doubled = false;
-    this.spec = makeStageSpec(this.stage, BASE_SEED + this.stage * 7919, getProgress().assist);
+    // 혼자 하기는 로봇 없이 (대표 지시 11-20: 정신없음). 로봇은 대전의 빈자리에만 쓴다.
+    this.spec = { ...makeStageSpec(this.stage, BASE_SEED + this.stage * 7919, getProgress().assist), botCount: 0 };
     this.world = createWorld(this.spec);
     this.prev = this.world;
     this.initialWorld = this.world;

@@ -83,6 +83,7 @@ const EN = {
   'skin.guardian.default': 'Classic',
   'skin.guardian.frame': 'Blue Frame',
   'skin.guardian.crown': 'Crown',
+  'skin.guardian.jangseung': 'Jangseung',
 } as const;
 
 export type MsgKey = keyof typeof EN;
@@ -169,6 +170,7 @@ const KO: Record<MsgKey, string> = {
   'skin.guardian.default': '클래식',
   'skin.guardian.frame': '블루 프레임',
   'skin.guardian.crown': '왕관',
+  'skin.guardian.jangseung': '장승',
 };
 
 export const DICTS: Readonly<Record<Lang, Readonly<Record<MsgKey, string>>>> = { en: EN, ko: KO };
