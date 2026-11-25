@@ -89,5 +89,15 @@ const I = {
   await pg.pdf({ path: 'out/A_navy_print_RGB.pdf', width: '96mm', height: '56mm', printBackground: true });
   const els = await pg.$$('.p');
   for (let i = 0; i < els.length; i++) await els[i].screenshot({ path: `out/A_navy_${i ? 'back' : 'front'}.png` });
+  // ---- 재단선(트림마크) 버전: 106x66mm 용지, 재단 영역은 (8,8)~(98,58)mm ----
+  const T = 8, R = 98, B = 58, L = (x1, y1, x2, y2) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+  const marks = `<svg viewBox="0 0 106 66" width="106mm" height="66mm" stroke="#000" stroke-width=".1" fill="none">`
+    + [T, R].map(x => L(x, 1, x, 4) + L(x, 62, x, 65)).join('')
+    + [T, B].map(y => L(1, y, 4, y) + L(102, y, 105, y)).join('') + '</svg>';
+  await pg.addStyleTag({ content: '@page{size:106mm 66mm;margin:0}html,body{width:106mm}.sheet{width:106mm;height:66mm;position:relative;overflow:hidden;break-after:page;background:#fff}.sheet .p{position:absolute;left:5mm;top:5mm;break-after:auto}.sheet>svg{position:absolute;left:0;top:0}' });
+  await pg.evaluate(m => document.querySelectorAll('.p').forEach(p => {
+    const s = document.createElement('div'); s.className = 'sheet'; p.replaceWith(s); s.appendChild(p); s.insertAdjacentHTML('beforeend', m);
+  }), marks);
+  await pg.pdf({ path: 'out/A_navy_print_RGB_marks.pdf', width: '106mm', height: '66mm', printBackground: true });
   await br.close();
 })();
